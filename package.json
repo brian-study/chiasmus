@@ -45,6 +45,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepare": "pnpm run build",
     "prepublishOnly": "pnpm run build",
     "test": "vitest",
     "test:run": "vitest run",
