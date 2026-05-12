@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "chiasmus": "dist/mcp-server.js"
+    "chiasmus": "dist/mcp-server.js",
+    "chiasmus-http": "dist/mcp-http-server.js"
   },
   "exports": {
     ".": {
@@ -51,6 +52,7 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "mcp": "tsx src/mcp-server.ts",
+    "mcp:http": "tsx src/mcp-http-server.ts",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [

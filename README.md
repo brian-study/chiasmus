@@ -38,6 +38,23 @@ Or add to `~/.claude/settings.json`:
 }
 ```
 
+### Long-running HTTP daemon
+
+For clients that support URL-based MCP servers, run Chiasmus once as a Streamable HTTP daemon:
+
+```bash
+chiasmus-http --host 127.0.0.1 --port 3939 --path /mcp
+```
+
+Then configure the client to use:
+
+```toml
+[mcp_servers.chiasmus]
+url = "http://127.0.0.1:3939/mcp"
+```
+
+This avoids spawning a separate `npx chiasmus` stdio process for every client session.
+
 ### Crush
 
 Add to `crush.json`:
