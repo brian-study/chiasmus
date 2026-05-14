@@ -12,20 +12,20 @@ Chiasmus is an MCP (Model Context Protocol) server that gives LLMs access to for
 ## Commands
 
 ```bash
-npm run build          # Compile TypeScript (tsc) → dist/
-npm run typecheck      # Type-check only (tsc --noEmit)
-npm run test           # Run tests in watch mode (vitest)
-npm run test:run       # Run tests once (vitest run)
-npm run test:coverage  # Run tests with V8 coverage report
-npm run mcp            # Run MCP server locally via tsx
+pnpm build          # Compile TypeScript (tsc) → dist/
+pnpm typecheck      # Type-check only (tsc --noEmit)
+pnpm test           # Run tests in watch mode (vitest)
+pnpm test:run       # Run tests once (vitest run)
+pnpm test:coverage  # Run tests with V8 coverage report
+pnpm mcp            # Run MCP server locally via tsx
 ```
 
 ### CI Pipeline
 
 CI runs on push/PR to `main` (`.github/workflows/test.yml`):
-1. `npm ci`
-2. `npm run typecheck`
-3. `npm run test:run`
+1. `pnpm install --frozen-lockfile`
+2. `pnpm typecheck`
+3. `pnpm test:run`
 
 Tested on Node 20 and 22.
 

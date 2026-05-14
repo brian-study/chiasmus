@@ -1,6 +1,6 @@
 {
   "name": "chiasmus",
-  "version": "0.1.17",
+  "version": "0.1.19",
   "type": "module",
   "description": "Neurosymbolic verification engine - MCP server for formal reasoning with Z3 and SWI-Prolog (WASM)",
   "main": "dist/index.js",
@@ -45,7 +45,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "pnpm run build",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
@@ -100,6 +100,19 @@
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^4.0.17"
+  },
+  "packageManager": "pnpm@10.18.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@yogthos/tree-sitter-clojure",
+      "better-sqlite3",
+      "esbuild",
+      "tree-sitter",
+      "tree-sitter-go",
+      "tree-sitter-javascript",
+      "tree-sitter-python",
+      "tree-sitter-typescript"
+    ]
   },
   "engines": {
     "node": ">=20.0.0"
