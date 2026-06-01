@@ -314,6 +314,9 @@ function isCommentNode(type: string): boolean {
 function isDocShape(raw: string, lang: string): boolean {
   const s = raw.trimStart();
   if (lang === "go") return s.startsWith("//");
+  // Rust: doc comments are `///` (outer) and `//!` (inner/module) line
+  // comments, plus `/** */` block docs. Plain `//` is noise.
+  if (lang === "rust") return s.startsWith("///") || s.startsWith("//!") || s.startsWith("/**");
   // TS / JS: require a JSDoc block. Plain `/* ... */` and `//` are noise.
   return s.startsWith("/**");
 }
@@ -325,7 +328,7 @@ function normalizeCommentText(raw: string): string {
   if (s.endsWith("*/")) s = s.slice(0, -2);
   const parts = s
     .split("\n")
-    .map((l) => l.replace(/^\s*(?:\/+|#+|\*+)\s?/, "").trim())
+    .map((l) => l.replace(/^\s*(?:\/+!?|#+|\*+)\s?/, "").trim())
     .filter(Boolean);
   return parts.join(" ");
 }
@@ -406,6 +409,8 @@ function extractFromTree(
     walkPython(tree.rootNode, filePath, scopeStack, defines, calls, imports, exports, contains, callSet);
   } else if (lang === "go") {
     walkGo(tree.rootNode, filePath, defines, calls, imports, exports, contains, callSet);
+  } else if (lang === "rust") {
+    walkRust(tree.rootNode, filePath, null, defines, calls, imports, exports, contains, callSet);
   } else {
     const scopeStack: string[] = [];
     // Per-file alias map: local name → imported name. Populated as
@@ -1146,6 +1151,227 @@ function extractGoReceiverType(receiver: any): string | null {
     }
   }
   return null;
+}
+
+// ── Rust extraction ─────────────────────────────────────────────────
+
+/**
+ * Walk a Rust syntax tree, emitting defines/calls/imports/exports/contains.
+ * `implType` carries the enclosing `impl Foo`/`trait Foo` type name down into
+ * a declaration body so methods can be attributed to their owner via the
+ * `contains` relation and recorded with kind "method".
+ */
+function walkRust(
+  node: any,
+  filePath: string,
+  implType: string | null,
+  defines: DefinesFact[],
+  calls: CallsFact[],
+  imports: ImportsFact[],
+  exports: ExportsFact[],
+  contains: ContainsFact[],
+  callSet: Set<string>,
+): void {
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    const type: string = child.type;
+
+    switch (type) {
+      case "function_item":
+      case "function_signature_item": {
+        const name = child.childForFieldName("name")?.text;
+        if (name) {
+          const kind = implType ? "method" : "function";
+          defines.push({
+            file: filePath, name, kind,
+            line: child.startPosition.row + 1,
+            signature: extractRustSignature(child),
+          });
+          if (implType) {
+            contains.push({ parent: implType, child: name });
+          }
+          if (isRustPub(child)) {
+            exports.push({ file: filePath, name });
+          }
+          // function_signature_item (trait method decls) have no body.
+          extractRustCalls(child.childForFieldName("body"), name, calls, callSet);
+        }
+        break;
+      }
+
+      case "struct_item":
+      case "enum_item":
+      case "union_item": {
+        const name = child.childForFieldName("name")?.text;
+        if (name) {
+          defines.push({ file: filePath, name, kind: "class", line: child.startPosition.row + 1 });
+          if (isRustPub(child)) exports.push({ file: filePath, name });
+        }
+        break;
+      }
+
+      case "trait_item": {
+        const name = child.childForFieldName("name")?.text;
+        if (name) {
+          defines.push({ file: filePath, name, kind: "interface", line: child.startPosition.row + 1 });
+          if (isRustPub(child)) exports.push({ file: filePath, name });
+          // Recurse into trait body so method declarations attach to the trait.
+          const body = child.childForFieldName("body");
+          if (body) walkRust(body, filePath, name, defines, calls, imports, exports, contains, callSet);
+        }
+        break;
+      }
+
+      case "impl_item": {
+        // `impl Foo` or `impl Trait for Foo` — the `type` field names the
+        // concrete type the methods belong to.
+        const typeName = child.childForFieldName("type")?.text ?? null;
+        const body = child.childForFieldName("body");
+        if (body) walkRust(body, filePath, typeName, defines, calls, imports, exports, contains, callSet);
+        break;
+      }
+
+      case "mod_item": {
+        // Recurse into inline module bodies; items keep file-level scope.
+        const body = child.childForFieldName("body");
+        if (body) walkRust(body, filePath, null, defines, calls, imports, exports, contains, callSet);
+        break;
+      }
+
+      case "use_declaration": {
+        extractRustUse(child, filePath, imports);
+        break;
+      }
+    }
+  }
+}
+
+/** Does a Rust item carry a `pub`/`pub(...)` visibility modifier? */
+function isRustPub(node: any): boolean {
+  for (let i = 0; i < node.childCount; i++) {
+    if (node.child(i).type === "visibility_modifier") return true;
+  }
+  return false;
+}
+
+/**
+ * Extract a Rust signature: the `parameters` text plus the return type
+ * (tree-sitter-rust's `return_type` field) when present.
+ */
+function extractRustSignature(node: any): string | undefined {
+  const params = node.childForFieldName("parameters");
+  if (!params) return undefined;
+  let sig = params.text;
+  const ret = node.childForFieldName("return_type");
+  if (ret) sig += " -> " + ret.text;
+  return collapseSignature(sig);
+}
+
+/** Recursively extract call_expression nodes from a Rust function body. */
+function extractRustCalls(
+  node: any,
+  caller: string,
+  calls: CallsFact[],
+  callSet: Set<string>,
+): void {
+  if (!node) return;
+
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+
+    if (child.type === "call_expression") {
+      const callee = resolveRustCallee(child);
+      if (callee) {
+        const key = `${caller}->${callee}`;
+        if (!callSet.has(key)) {
+          callSet.add(key);
+          calls.push({ caller, callee });
+        }
+      }
+    }
+
+    extractRustCalls(child, caller, calls, callSet);
+  }
+}
+
+/** Resolve the callee name from a Rust call_expression. */
+function resolveRustCallee(callNode: any): string | null {
+  const fnNode = callNode.childForFieldName("function");
+  if (!fnNode) return null;
+
+  switch (fnNode.type) {
+    case "identifier":
+      return fnNode.text;
+
+    case "field_expression": {
+      // obj.method() / self.field.method() → the right-most field name.
+      const field = fnNode.childForFieldName("field");
+      return field?.text ?? null;
+    }
+
+    case "scoped_identifier": {
+      // Type::assoc_fn() / crate::module::func() → the right-most segment.
+      const name = fnNode.childForFieldName("name");
+      return name?.text ?? null;
+    }
+
+    default:
+      return null;
+  }
+}
+
+/**
+ * Extract import bindings from a Rust `use_declaration`. Each imported name
+ * is recorded against its full path source (e.g. `use a::b::{c, d as e}`
+ * yields names `c` and `e` with source `a::b`). Glob imports (`use x::*`)
+ * are skipped — they bind no nameable symbol.
+ */
+function extractRustUse(useDecl: any, filePath: string, imports: ImportsFact[]): void {
+  // The argument is the first named child: scoped_identifier, identifier,
+  // scoped_use_list, use_wildcard, or use_as_clause.
+  for (let i = 0; i < useDecl.namedChildCount; i++) {
+    collectRustUse(useDecl.namedChild(i), "", filePath, imports);
+  }
+}
+
+function collectRustUse(node: any, prefix: string, filePath: string, imports: ImportsFact[]): void {
+  if (!node) return;
+  switch (node.type) {
+    case "identifier":
+    case "type_identifier": {
+      const source = prefix || node.text;
+      imports.push({ file: filePath, name: node.text, source });
+      break;
+    }
+    case "scoped_identifier": {
+      // `a::b::Name` — `path` is the prefix, `name` the bound symbol.
+      const path = node.childForFieldName("path")?.text ?? prefix;
+      const name = node.childForFieldName("name")?.text;
+      if (name) imports.push({ file: filePath, name, source: path || name });
+      break;
+    }
+    case "scoped_use_list": {
+      // `a::b::{c, d as e}` — recurse the list with the path as prefix.
+      const path = node.childForFieldName("path")?.text ?? prefix;
+      const list = node.namedChildren.find((c: any) => c.type === "use_list");
+      if (list) {
+        for (let i = 0; i < list.namedChildCount; i++) {
+          collectRustUse(list.namedChild(i), path, filePath, imports);
+        }
+      }
+      break;
+    }
+    case "use_as_clause": {
+      // `d as e` — bind the alias, keep the original path as source.
+      const alias = node.childForFieldName("alias")?.text;
+      const path = node.childForFieldName("path")?.text;
+      if (alias) imports.push({ file: filePath, name: alias, source: prefix || path || alias });
+      break;
+    }
+    case "use_wildcard":
+      // `use x::*` binds no nameable symbol — skip.
+      break;
+  }
 }
 
 // ── Clojure extraction ──────────────────────────────────────────────

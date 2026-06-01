@@ -25,6 +25,7 @@ const LANGUAGE_CONFIG: Record<string, LangConfig> = {
   javascript: { package: "tree-sitter-javascript" },
   python: { package: "tree-sitter-python" },
   go: { package: "tree-sitter-go" },
+  rust: { package: "tree-sitter-rust" },
   clojure: { package: "@yogthos/tree-sitter-clojure", wasm: true, wasmFile: "tree-sitter-clojure.wasm" },
 };
 
@@ -40,6 +41,7 @@ const EXT_MAP: Record<string, string> = {
   ".py": "python",
   ".pyw": "python",
   ".go": "go",
+  ".rs": "rust",
   ".clj": "clojure",
   ".cljs": "clojure",
   ".cljc": "clojure",
