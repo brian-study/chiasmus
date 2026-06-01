@@ -55,7 +55,7 @@ src/
 │   └── relationships.ts   # Template relationship/suggestion graph
 ├── graph/
 │   ├── types.ts           # CodeGraph, LanguageAdapter, FileNode, Hyperedge, DefinesFact, CallsFact.calleeQN, ImportsFact.resolved, FileTypeInfo
-│   ├── parser.ts          # tree-sitter lang registry + sync/async parse for TS/JS/Py/Go/Clojure
+│   ├── parser.ts          # tree-sitter lang registry + sync/async parse for TS/JS/Py/Go/Rust/Clojure
 │   ├── extractor.ts       # AST walking + per-language call graph extraction + TS/JS collectTypeInfo
 │   ├── facts.ts           # graphToProlog — CodeGraph → Prolog facts (incl. calls_qn/3, imports_resolved/3)
 │   ├── analyses.ts        # runAnalysis — dispatches all graph analyses
@@ -260,10 +260,10 @@ Options:
 - `cache=true`: reuse the shared per-file extraction cache (same directory and invalidation as `chiasmus_graph`).
 
 Data sources (added to `CodeGraph` for this feature):
-- `FileNode.fileDoc` — language-specific, idiomatic doc only: TS/JS JSDoc `/** */`, Python `"""..."""` module docstring, Go `//` package-doc comments. Plain `//` line comments in TS/JS, `#` comments in Python, and `;` comments in Clojure are intentionally rejected (usually license/shebang noise).
+- `FileNode.fileDoc` — language-specific, idiomatic doc only: TS/JS JSDoc `/** */`, Python `"""..."""` module docstring, Go `//` package-doc comments, Rust `///` and `//!` doc comments. Plain `//` line comments in TS/JS, `#` comments in Python, and `;` comments in Clojure are intentionally rejected (usually license/shebang noise).
 - `FileNode.tokenEstimate` — `ceil(content.length / 3.5)` so an agent can read-budget.
 - `FileNode.lineCount` — newline-count with trailing-line adjustment.
-- `DefinesFact.signature` — params + return type (TS/JS/Python/Go); arglist vector for Clojure `defn` and `defprotocol`/`definterface` methods.
+- `DefinesFact.signature` — params + return type (TS/JS/Python/Go/Rust); arglist vector for Clojure `defn` and `defprotocol`/`definterface` methods.
 - TypeScript exports now also include `interface`, `type`, and `enum` declarations, so `exportCount` reflects the full public surface.
 - Cache schema is currently `"3"` (bumped when `CodeGraph._typeInfo` and `CallsFact.calleeQN` landed). Older caches auto-invalidate on upgrade.
 
