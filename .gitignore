@@ -3,3 +3,12 @@ dist/
 coverage/
 *.tsbuildinfo
 .DS_Store
+
+# Agent tooling & local config
+.wolf/
+.claude/
+.clj-kondo/
+.lsp/
+CLAUDE.md
+publish.sh
+neurosymbolic.tex
