@@ -4,7 +4,33 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extractGraph } from "../../src/graph/extractor.js";
 import { MockEmbeddingAdapter } from "../../src/llm/mock.js";
+import type { EmbeddingAdapter } from "../../src/llm/types.js";
 import { buildSearchCorpus, runSearch } from "../../src/search/engine.js";
+
+/**
+ * Embedding adapter whose dimension is only knowable after the first
+ * embed() call — exactly how OpenAICompatibleEmbeddingAdapter behaves
+ * when CHIASMUS_EMBED_DIM is unset. dimension() throws until then.
+ */
+class LazyDimAdapter implements EmbeddingAdapter {
+  private dim: number | null = null;
+  constructor(private readonly nativeDim: number) {}
+  async embed(texts: string[]): Promise<number[][]> {
+    return texts.map((t) => {
+      const v = Array.from({ length: this.nativeDim }, (_, i) =>
+        ((t.charCodeAt(i % Math.max(1, t.length)) || 1) % 17) / 17,
+      );
+      if (this.dim === null) this.dim = v.length;
+      return v;
+    });
+  }
+  dimension(): number {
+    if (this.dim === null) {
+      throw new Error("Embedding dimension is unknown until the first embed() call.");
+    }
+    return this.dim;
+  }
+}
 
 let dir: string;
 beforeEach(() => {
@@ -117,6 +143,26 @@ describe("runSearch (MockEmbeddingAdapter)", () => {
       topK: 2,
     });
     expect(results).toHaveLength(2);
+  });
+
+  it("works when the adapter's dimension is unknown until the first embed()", async () => {
+    // Mirrors the OpenAI-compatible adapter when CHIASMUS_EMBED_DIM is unset:
+    // dimension() throws until embed() has returned at least one vector.
+    const a = write(
+      "a.ts",
+      `export function alpha() {} export function beta() {} export function gamma() {}`,
+    );
+    const graph = await extractGraph(
+      [{ path: a, content: readFileSync(a, "utf8") }],
+      { repoPath: dir },
+    );
+    const files = new Map([[a, readFileSync(a, "utf8")]]);
+    const corpus = buildSearchCorpus(graph, files);
+
+    const adapter = new LazyDimAdapter(8);
+    const results = await runSearch({ query: "beta", corpus, adapter, topK: 2 });
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.name)).toContain("beta");
   });
 
   it("each result carries file path, line, and signature from the graph", async () => {

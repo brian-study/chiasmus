@@ -87,8 +87,12 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchHit[]> {
   const { query, corpus, adapter, topK, cache } = opts;
   if (corpus.length === 0) return [];
 
-  const dim = adapter.dimension();
-  const store = new VectorStore({ dimension: dim });
+  // The dimension may be unknown until the first embed() — adapters that
+  // learn it from the provider response (OpenAI-compatible, Azure) throw
+  // from dimension() until then. Discover it lazily from cached or freshly
+  // embedded vectors rather than requiring it up front, so the very first
+  // search works without CHIASMUS_EMBED_DIM being set.
+  let dim = tryDimension(adapter);
 
   const toEmbed: string[] = [];
   const toEmbedIdx: number[] = [];
@@ -97,7 +101,11 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchHit[]> {
   for (let i = 0; i < corpus.length; i++) {
     const text = corpus[i].text;
     const hit = cache?.get(text) ?? null;
-    if (hit && hit.length === dim) {
+    // When dim is known, drop cache entries that don't match it (model
+    // swap). When it isn't, trust the cache — it persists a single fixed
+    // dimension — and adopt its vector length as the dimension.
+    if (hit && (dim === null || hit.length === dim)) {
+      if (dim === null) dim = hit.length;
       cachedVecs.set(i, hit);
     } else {
       toEmbed.push(text);
@@ -109,18 +117,24 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchHit[]> {
     const fresh = await adapter.embed(toEmbed);
     for (let j = 0; j < fresh.length; j++) {
       const idx = toEmbedIdx[j];
+      if (dim === null) dim = fresh[j].length;
       cachedVecs.set(idx, fresh[j]);
       cache?.put(toEmbed[j], fresh[j]);
     }
   }
 
+  // Always need a query vector; this also pins the dimension when every
+  // corpus entry was served from cache.
+  const [queryVec] = await adapter.embed([query]);
+  if (dim === null) dim = queryVec.length;
+
+  const store = new VectorStore({ dimension: dim });
   for (let i = 0; i < corpus.length; i++) {
     const v = cachedVecs.get(i);
     if (!v) continue;
     store.add({ id: corpus[i].id, vector: v });
   }
 
-  const [queryVec] = await adapter.embed([query]);
   const hits = store.search(queryVec, topK);
 
   const byId = new Map<string, SearchCorpusEntry>();
@@ -144,6 +158,15 @@ export async function runSearch(opts: RunSearchOptions): Promise<SearchHit[]> {
 
 function makeEntryId(d: DefinesFact): string {
   return `${d.file}#${d.name}#${d.line}`;
+}
+
+/** adapter.dimension(), or null if it isn't known yet (throws before first embed). */
+function tryDimension(adapter: EmbeddingAdapter): number | null {
+  try {
+    return adapter.dimension();
+  } catch {
+    return null;
+  }
 }
 
 const SNIPPET_LINES = 6;
