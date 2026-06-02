@@ -1238,7 +1238,17 @@ export async function createChiasmusServer(
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS,
+    // Don't advertise tools whose required backend isn't configured — the
+    // model shouldn't be offered a tool that can only return a "not
+    // configured" error. Tools that degrade gracefully stay listed:
+    // chiasmus_solve/chiasmus_formalize fall back to template mode without
+    // an LLM, so only chiasmus_learn (LLM-only) and chiasmus_search
+    // (embedding-only) are gated.
+    tools: TOOLS.filter((t) => {
+      if (t.name === "chiasmus_search") return embedding !== null;
+      if (t.name === "chiasmus_learn") return llm !== null;
+      return true;
+    }),
   }));
 
   // FormalizationEngine for formalize tool (always available, uses dummy LLM for template selection only)

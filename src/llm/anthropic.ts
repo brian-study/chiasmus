@@ -166,16 +166,6 @@ export function createEmbeddingFromEnv(): EmbeddingAdapter | null {
     });
   }
 
-  const deepseekKey = process.env.DEEPSEEK_API_KEY;
-  if (deepseekKey) {
-    return new OpenAICompatibleEmbeddingAdapter({
-      apiKey: deepseekKey,
-      baseUrl: customUrl ?? "https://api.deepseek.com",
-      model,
-      dimension,
-    });
-  }
-
   const orKey = process.env.OPENROUTER_API_KEY;
   if (orKey) {
     return new OpenAICompatibleEmbeddingAdapter({
@@ -184,6 +174,27 @@ export function createEmbeddingFromEnv(): EmbeddingAdapter | null {
       model,
       dimension,
     });
+  }
+
+  const deepseekKey = process.env.DEEPSEEK_API_KEY;
+  if (deepseekKey) {
+    // DeepSeek's API has no /embeddings endpoint, so it cannot back
+    // chiasmus_search on its own — auto-selecting it produced a confusing
+    // 404 / "dimension unknown" error. Only use the key when the user has
+    // explicitly pointed CHIASMUS_EMBED_URL at an OpenAI-compatible
+    // embeddings endpoint (e.g. a gateway or a local Ollama).
+    if (customUrl) {
+      return new OpenAICompatibleEmbeddingAdapter({
+        apiKey: deepseekKey,
+        baseUrl: customUrl,
+        model,
+        dimension,
+      });
+    }
+    console.warn(
+      "[chiasmus] DEEPSEEK_API_KEY is set, but DeepSeek has no embeddings API, so chiasmus_search cannot use it. Set OPENAI_API_KEY or OPENROUTER_API_KEY, or point CHIASMUS_EMBED_URL at an OpenAI-compatible embeddings endpoint (e.g. a local Ollama).",
+    );
+    return null;
   }
 
   return null;

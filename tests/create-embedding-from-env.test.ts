@@ -139,4 +139,44 @@ describe("createEmbeddingFromEnv", () => {
       expect(adapter).toBeInstanceOf(OpenAICompatibleEmbeddingAdapter);
     });
   });
+
+  describe("OpenRouter fallback", () => {
+    it("returns an OpenAICompatibleEmbeddingAdapter when only OPENROUTER_API_KEY is set", () => {
+      process.env.OPENROUTER_API_KEY = "or-k";
+      const adapter = createEmbeddingFromEnv();
+      expect(adapter).toBeInstanceOf(OpenAICompatibleEmbeddingAdapter);
+    });
+  });
+
+  describe("DeepSeek (no embeddings API)", () => {
+    it("warns and returns null when only DEEPSEEK_API_KEY is set", () => {
+      // DeepSeek has no /embeddings endpoint, so it must not be auto-selected
+      // for search — doing so produced a confusing 404 / dimension error.
+      process.env.DEEPSEEK_API_KEY = "ds-k";
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const adapter = createEmbeddingFromEnv();
+      expect(adapter).toBeNull();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0]?.[0]).toMatch(/DeepSeek/);
+    });
+
+    it("is honored when CHIASMUS_EMBED_URL points at an embeddings-capable endpoint", () => {
+      // An explicit custom URL means the user is routing the DeepSeek key at
+      // an OpenAI-compatible embeddings gateway (or local Ollama) — honor it.
+      process.env.DEEPSEEK_API_KEY = "ds-k";
+      process.env.CHIASMUS_EMBED_URL = "http://localhost:11434/v1";
+
+      const adapter = createEmbeddingFromEnv();
+      expect(adapter).toBeInstanceOf(OpenAICompatibleEmbeddingAdapter);
+    });
+
+    it("does not take precedence over a working OPENROUTER_API_KEY", () => {
+      process.env.DEEPSEEK_API_KEY = "ds-k";
+      process.env.OPENROUTER_API_KEY = "or-k";
+
+      const adapter = createEmbeddingFromEnv();
+      expect(adapter).toBeInstanceOf(OpenAICompatibleEmbeddingAdapter);
+    });
+  });
 });
