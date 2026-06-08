@@ -24,6 +24,13 @@ build-on-install prepare script, and this TODO. Re-sync periodically:
 
 ## Open
 
+> **Filed upstream as [yogthos/chiasmus#36](https://github.com/yogthos/chiasmus/issues/36) (2026-06-08):**
+> `serverInfo.version` hardcoded, `converged`=true on unsat, weak Prolog period lint
+> (all code-confirmed, zero-doubt), + `chiasmus_learn` promotion + within-domain
+> selection precision as lower-confidence "also noticed" mentions. Maintainer-gated;
+> open PR(s) if they're amenable. `solve` fill non-determinism deliberately NOT filed
+> (inherent LLM limitation, not a defect).
+
 - **`chiasmus_solve` fill non-determinism.** Selector + fill are fixed, but the
   model is still LLM-authored → no hard guarantee (a different, possibly-wrong
   model each run). The lane uses `chiasmus_verify` (agent-authored model) for
