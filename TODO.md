@@ -9,12 +9,14 @@ Context: this fork carries the lab harness's chiasmus-verification lane work —
 
 ## Open
 
-- **[upstream] Upstream the selector + fill fixes.** `fdf000b` (embedding re-rank
-  for template selection — fixes BM25 mis-picking `pagination-sort-stability` for
-  an RBAC problem) and `d413cdb` (strict `FORMALIZE_SYSTEM` — stops the slot-fill
-  hallucinating values from the template's own examples) are improvements over
-  upstream `0.1.21`. Float as an issue first (they change selection/fill behavior),
-  then PR. The `Err`/`EStr` binding fix is already PR #34.
+- **[upstream] Upstream the selector + fill fixes — issue #35 OPENED (2026-06-08);
+  PR pending maintainer.** `fdf000b` (embedding re-rank for template selection —
+  fixes BM25 mis-picking `pagination-sort-stability` for an RBAC problem) and
+  `d413cdb` (strict `FORMALIZE_SYSTEM` — stops the slot-fill hallucinating values
+  from the template's own examples), improvements over upstream `0.1.21`. Floated
+  as yogthos/chiasmus#35 (both problems + our impl, offered to PR — selector is
+  the opinionated one since it adds an optional embedding dep to selection). Open
+  the PR(s) once the maintainer responds; split into two if they prefer.
 
 - **Track PR #34** (strip internal prolog wrapper variables from solver bindings)
   through review/merge on `yogthos/chiasmus`.
