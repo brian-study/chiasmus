@@ -694,6 +694,7 @@ async function handleSolve(
   formalizer: FormalizationEngine | null,
   library: SkillLibrary,
   args: Record<string, unknown>,
+  embedding: EmbeddingAdapter | null,
 ): Promise<CallToolResult> {
   if (typeof args.problem !== "string" || !args.problem) {
     return {
@@ -706,7 +707,7 @@ async function handleSolve(
   if (!formalizer) {
     const dummyEngine = new FormalizationEngine(library, {
       async complete() { return ""; },
-    });
+    }, embedding ?? undefined);
     const result = await dummyEngine.formalize(problem);
     if (!result) {
       return {
@@ -1226,10 +1227,10 @@ export async function createChiasmusServer(
 
   // Use override if provided, otherwise try env
   const llm = llmOverride !== undefined ? llmOverride : createLLMFromEnv();
-  const formalizer = llm ? new FormalizationEngine(library, llm) : null;
-  const learner = llm ? new SkillLearner(library, llm) : null;
   const embedding =
     embeddingOverride !== undefined ? embeddingOverride : createEmbeddingFromEnv();
+  const formalizer = llm ? new FormalizationEngine(library, llm, embedding ?? undefined) : null;
+  const learner = llm ? new SkillLearner(library, llm) : null;
   const embeddingHome = home;
 
   const server = new Server(
@@ -1254,7 +1255,7 @@ export async function createChiasmusServer(
   // FormalizationEngine for formalize tool (always available, uses dummy LLM for template selection only)
   const formalizeEngine = new FormalizationEngine(library, llm ?? {
     async complete() { return ""; },
-  });
+  }, embedding ?? undefined);
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
@@ -1267,7 +1268,7 @@ export async function createChiasmusServer(
       case "chiasmus_formalize":
         return handleFormalize(formalizeEngine, library, args ?? {});
       case "chiasmus_solve":
-        return handleSolve(formalizer, library, args ?? {});
+        return handleSolve(formalizer, library, args ?? {}, embedding);
       case "chiasmus_learn":
         return handleLearn(learner, args ?? {});
       case "chiasmus_lint":

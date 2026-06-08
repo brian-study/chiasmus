@@ -1,4 +1,4 @@
-import type { LLMAdapter } from "../llm/types.js";
+import type { LLMAdapter, EmbeddingAdapter } from "../llm/types.js";
 import type { SkillLibrary } from "../skills/library.js";
 import type { SkillTemplate } from "../skills/types.js";
 import type { SolverInput, SolverResult, PrologAnswer } from "../solvers/types.js";
@@ -30,6 +30,10 @@ const FORMALIZE_SYSTEM = `Formalization engine. Translate natural language → f
 Template = starting point. Fill slots, but adapt structure if needed. Add/remove variables, assertions, rules.
 Output ONLY complete spec. No explanation, no markdown fences.
 
+⚠ SLOT format examples and the EXAMPLE block illustrate FORM/SYNTAX only — never copy their concrete
+values (roles, actions, resources, predicates, etc.) into your output. Model EXACTLY AND ONLY the
+entities, values, and rules stated in the PROBLEM. Never introduce content the problem doesn't mention.
+
 Z3: valid SMT-LIB. No (check-sat)/(get-model). Use (= flag (or ...)) not (=> ... flag).
 Prolog: valid ISO Prolog. All clauses end with period.
 
@@ -46,25 +50,82 @@ export class FormalizationEngine {
   constructor(
     private library: SkillLibrary,
     private llm: LLMAdapter,
+    private embedding?: EmbeddingAdapter,
   ) {}
 
   /**
    * Formalize a problem: select a template and return it with
    * fill instructions. Does NOT execute or call the LLM for filling.
+   *
+   * When an EmbeddingAdapter is available, all templates are embedded
+   * and re-ranked by cosine similarity to the problem. BM25 is the
+   * fallback when no embedding adapter is configured or embedding fails.
    */
   async formalize(problem: string): Promise<FormalizeResult | null> {
-    const results = this.library.search(problem, { limit: 1 });
     let template: SkillTemplate | null = null;
-    if (results.length > 0) {
-      template = results[0].template;
-    } else {
-      const fallback = this.library.list()[0];
-      if (fallback) template = fallback.template;
+
+    if (this.embedding) {
+      const best = await this.selectByEmbedding(problem);
+      if (best) template = best;
     }
+
+    // Fallback to BM25 when no embedding adapter or embedding failed
+    if (!template) {
+      const results = this.library.search(problem, { limit: 1 });
+      if (results.length > 0) {
+        template = results[0].template;
+      } else {
+        const fallback = this.library.list()[0];
+        if (fallback) template = fallback.template;
+      }
+    }
+
     if (!template) return null;
 
     const instructions = this.buildInstructions(problem, template);
     return { template, instructions };
+  }
+
+  /**
+   * Use embedding-based cosine similarity to select the best template.
+   * Returns null on any failure so the caller can fall back to BM25.
+   */
+  private async selectByEmbedding(problem: string): Promise<SkillTemplate | null> {
+    try {
+      const all = this.library.list();
+      if (all.length === 0) return null;
+
+      const texts = all.map((s) => this.library.getTemplateSearchText(s.template));
+      const vectors = await this.embedding!.embed([problem, ...texts]);
+
+      const queryVec = vectors[0];
+      const templateVecs = vectors.slice(1);
+
+      // Cosine similarity
+      const qNorm = l2Norm(queryVec);
+      if (qNorm === 0) return null;
+
+      let bestIdx = -1;
+      let bestScore = -Infinity;
+      for (let i = 0; i < templateVecs.length; i++) {
+        const tNorm = l2Norm(templateVecs[i]);
+        if (tNorm === 0) continue;
+        let dot = 0;
+        for (let j = 0; j < queryVec.length; j++) {
+          dot += templateVecs[i][j] * queryVec[j];
+        }
+        const score = dot / (qNorm * tNorm);
+        if (score > bestScore) {
+          bestScore = score;
+          bestIdx = i;
+        }
+      }
+
+      if (bestIdx < 0) return null;
+      return all[bestIdx].template;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -255,4 +316,10 @@ Fix the specification and return only the corrected version.`,
       .replace(/^```\n?/gm, "")
       .trim();
   }
+}
+
+function l2Norm(v: number[]): number {
+  let sum = 0;
+  for (let i = 0; i < v.length; i++) sum += v[i] * v[i];
+  return Math.sqrt(sum);
 }

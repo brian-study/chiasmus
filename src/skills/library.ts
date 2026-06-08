@@ -34,13 +34,7 @@ export class SkillLibrary {
     this.templateOrder = [...templates.keys()];
     const searchTexts = this.templateOrder.map((name) => {
       const t = templates.get(name)!;
-      return [
-        t.name,
-        t.domain,
-        t.signature,
-        ...t.slots.map((s) => s.description),
-        ...t.normalizations.map((n) => `${n.source} ${n.transform}`),
-      ].join(" ");
+      return this.getTemplateSearchText(t);
     });
     this.searchIndex = buildIndex(searchTexts);
 
@@ -169,6 +163,17 @@ export class SkillLibrary {
     return getRelatedTemplates(name);
   }
 
+  /** Produce the searchable text for a template (BM25 and embeddings rank the same surface) */
+  getTemplateSearchText(template: SkillTemplate): string {
+    return [
+      template.name,
+      template.domain,
+      template.signature,
+      ...template.slots.map((s) => s.description),
+      ...template.normalizations.map((n) => `${n.source} ${n.transform}`),
+    ].join(" ");
+  }
+
   /** Search templates by natural language query */
   search(query: string, options: SearchOptions = {}): SkillSearchResult[] {
     const limit = options.limit ?? 10;
@@ -269,13 +274,7 @@ export class SkillLibrary {
 
     // Incrementally add to search index
     this.templateOrder.push(template.name);
-    const searchText = [
-      template.name,
-      template.domain,
-      template.signature,
-      ...template.slots.map((s) => s.description),
-      ...template.normalizations.map((n) => `${n.source} ${n.transform}`),
-    ].join(" ");
+    const searchText = this.getTemplateSearchText(template);
     addToIndex(this.searchIndex, searchText);
 
     return true;
@@ -311,13 +310,7 @@ export class SkillLibrary {
     this.templateOrder = [...this.templates.keys()];
     const searchTexts = this.templateOrder.map((name) => {
       const t = this.templates.get(name)!;
-      return [
-        t.name,
-        t.domain,
-        t.signature,
-        ...t.slots.map((s) => s.description),
-        ...t.normalizations.map((n) => `${n.source} ${n.transform}`),
-      ].join(" ");
+      return this.getTemplateSearchText(t);
     });
     this.searchIndex = buildIndex(searchTexts);
   }
