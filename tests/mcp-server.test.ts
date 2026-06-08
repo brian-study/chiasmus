@@ -385,6 +385,18 @@ describe("Chiasmus MCP Server", () => {
       const parsed = JSON.parse(content[0].text);
       expect(parsed.error).toMatch(/problem/i);
     });
+
+    it("documents that `converged` is not a verdict on the property", async () => {
+      // Guards the wire-facing caveat: a client must be told `converged`
+      // means the loop ran, not that the property holds (an `unsat` is not
+      // a proof). See issue #36.
+      const tools = await client.listTools();
+      const solve = tools.tools.find((t) => t.name === "chiasmus_solve");
+      expect(solve).toBeDefined();
+      expect(solve!.description).toMatch(/converged/);
+      expect(solve!.description).toMatch(/result\.status/);
+      expect(solve!.description).toMatch(/not.*(proof|property holds)/i);
+    });
   });
 
   describe("chiasmus_verify batch queries", () => {

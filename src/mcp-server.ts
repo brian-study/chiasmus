@@ -179,7 +179,7 @@ Guided workflow:
     description: `End-to-end: select template → fill slots → lint → verify → correction loop.
 
 Needs ANTHROPIC_API_KEY | DEEPSEEK_API_KEY | OPENAI_API_KEY. Without key → falls back to chiasmus_formalize.
-Returns: verified result + template used + correction history.`,
+Returns: solver result + template used + correction history. NOTE: \`converged: true\` means the correction loop reached a non-error solver result — it does NOT mean the property holds. Read \`result.status\` (sat / unsat / unknown) for the actual verdict; an \`unsat\` ("no counterexample in this model") is not a proof.`,
     inputSchema: {
       type: "object" as const,
       properties: {
