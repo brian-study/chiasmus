@@ -7,19 +7,22 @@ guide is `AGENTS.md`; PR style is terse Title Case + `## Problem`/`## Fix`/`## T
 Context: this fork carries the lab harness's chiasmus-verification lane work — see
 `harness-plugin/docs/plans/2026-06-08-chiasmus-verification-lane.md`.
 
+## Synced to upstream 0.1.24 (2026-06-08)
+
+The fork was rebased onto `yogthos/chiasmus` 0.1.24. Three of our fixes are now
+upstream and our local versions were dropped as superseded:
+- ✅ **PR #34 (Err/EStr binding fix) MERGED** → upstream `a9826ec` (0.1.22).
+- ✅ **Issue #35 (selector + fill) FIXED by upstream** → `3aadfea` (0.1.23/0.1.24).
+  Upstream's fix is functionally identical to ours (optional `EmbeddingAdapter`
+  cosine re-rank with BM25 fallback; `FORMALIZE_SYSTEM` "examples are FORM/SYNTAX
+  only"; shared search-text helper). Our `fdf000b`/`d413cdb` dropped. Validated
+  live on our daemon (the Azure embedding config drives the re-rank).
+
+The fork now carries ONLY: the HTTP-daemon mode (`src/mcp-http-server.ts`), the
+build-on-install prepare script, and this TODO. Re-sync periodically:
+`git fetch upstream && git rebase upstream/main` (our 2 commits replay cleanly).
+
 ## Open
-
-- **[upstream] Upstream the selector + fill fixes — issue #35 OPENED (2026-06-08);
-  PR pending maintainer.** `fdf000b` (embedding re-rank for template selection —
-  fixes BM25 mis-picking `pagination-sort-stability` for an RBAC problem) and
-  `d413cdb` (strict `FORMALIZE_SYSTEM` — stops the slot-fill hallucinating values
-  from the template's own examples), improvements over upstream `0.1.21`. Floated
-  as yogthos/chiasmus#35 (both problems + our impl, offered to PR — selector is
-  the opinionated one since it adds an optional embedding dep to selection). Open
-  the PR(s) once the maintainer responds; split into two if they prefer.
-
-- **Track PR #34** (strip internal prolog wrapper variables from solver bindings)
-  through review/merge on `yogthos/chiasmus`.
 
 - **`chiasmus_solve` fill non-determinism.** Selector + fill are fixed, but the
   model is still LLM-authored → no hard guarantee (a different, possibly-wrong
