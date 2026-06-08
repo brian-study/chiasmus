@@ -27,9 +27,15 @@ build-on-install prepare script, and this TODO. Re-sync periodically:
 > **Filed upstream as [yogthos/chiasmus#36](https://github.com/yogthos/chiasmus/issues/36) (2026-06-08):**
 > `serverInfo.version` hardcoded, `converged`=true on unsat, weak Prolog period lint
 > (all code-confirmed, zero-doubt), + `chiasmus_learn` promotion + within-domain
-> selection precision as lower-confidence "also noticed" mentions. Maintainer-gated;
-> open PR(s) if they're amenable. `solve` fill non-determinism deliberately NOT filed
-> (inherent LLM limitation, not a defect).
+> selection precision as lower-confidence "also noticed" mentions. `solve` fill
+> non-determinism deliberately NOT filed (inherent LLM limitation, not a defect).
+>
+> **→ PR [yogthos/chiasmus#37](https://github.com/yogthos/chiasmus/pull/37) opened
+> (2026-06-08)** — maintainer said PRs welcome. Three confirmed nits, one commit
+> each, branched from `upstream/main`: `fix(mcp)` version from package.json,
+> `docs(solve)` converged≠proven at all 3 surfaces, `fix(lint)` Prolog clause
+> termination. The two "also noticed" items left out (need root-causing). Awaiting
+> review.
 
 - **`chiasmus_solve` fill non-determinism.** Selector + fill are fixed, but the
   model is still LLM-authored → no hard guarantee (a different, possibly-wrong
@@ -49,6 +55,8 @@ build-on-install prepare script, and this TODO. Re-sync periodically:
   solver ran and found no counterexample in the *given* model. A consumer reading
   `converged → safe` silently clears bugs (the lane carries a guard for this). The
   result shape should separate "ran" from "holds" so the API can't be misread.
+  → **PR #37** takes the documentation route (no result-shape change); a stronger
+  separate-the-shape fix could still follow if the maintainer wants it.
 
 - **`chiasmus_learn` is broken — fix or formally retire.** Audit-damning: persists
   wrong generalizations (collapsed a 3-edge graph to 1 → a cycle rule that can
@@ -58,10 +66,11 @@ build-on-install prepare script, and this TODO. Re-sync periodically:
 
 - **[upstream] `serverInfo.version` hardcoded `0.1.0`.** The daemon self-reports
   `0.1.0` regardless of `package.json` — can't trust the running version. Wire it
-  to `package.json`.
+  to `package.json`. → **PR #37** (awaiting review).
 
 ## Low value (noted, not planned)
 
 - **`chiasmus_lint`** — the prolog period-check is cosmetic (`includes(".")`);
   `chiasmus_verify` is the real syntax oracle. Keep `lint` as the internal
-  pre-solver auto-fixer only; not worth surfacing as a review tool.
+  pre-solver auto-fixer only; not worth surfacing as a review tool. → **PR #37**
+  tightens it (clause-termination check + corrected message) but keeps it internal.
