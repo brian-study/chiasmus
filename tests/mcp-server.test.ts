@@ -6,7 +6,12 @@ import { MockLLMAdapter } from "../src/llm/mock.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import type { SkillLibrary } from "../src/skills/library.js";
+
+const { version: PKG_VERSION } = createRequire(import.meta.url)(
+  "../package.json",
+) as { version: string };
 
 describe("Chiasmus MCP Server", () => {
   let client: Client;
@@ -666,6 +671,16 @@ describe("Chiasmus MCP Server", () => {
       const parsed = JSON.parse(content[0].text);
       expect(parsed.errors).toHaveLength(0);
       expect(parsed.fixes).toHaveLength(0);
+    });
+  });
+
+  describe("server metadata", () => {
+    it("reports the package.json version to clients, not a hardcoded value", () => {
+      // Regression guard for issue #36: serverInfo.version was pinned to
+      // "0.1.0" and could not be trusted over the wire.
+      const info = client.getServerVersion();
+      expect(info?.name).toBe("chiasmus");
+      expect(info?.version).toBe(PKG_VERSION);
     });
   });
 });
