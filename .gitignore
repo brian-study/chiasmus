@@ -9,6 +9,7 @@ coverage/
 .claude/
 .clj-kondo/
 .lsp/
+.dirge/
 CLAUDE.md
 publish.sh
 neurosymbolic.tex
