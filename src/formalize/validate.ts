@@ -131,9 +131,19 @@ function lintProlog(
 
   if (!stripped) return { spec: cleaned };
 
-  // Check: at least one clause ending with a period
+  // Check: the program is terminated by a period. The old check only
+  // verified *some* `.` was present, which the error message contradicted
+  // ("all clauses must end with a period") and which a stray `.` inside a
+  // float (e.g. `weight(3.14)` with no trailing period) would satisfy. We
+  // can cheaply prove two things without a full parser: at least one
+  // terminator exists, and the final clause is terminated (`endsWith(".")`,
+  // the most common omission). A period dropped *between* clauses merges
+  // them into one malformed term that only the solver can catch — out of
+  // scope for a pre-solver lint.
   if (!stripped.includes(".")) {
-    errors.push("No clauses ending with a period (.) — all Prolog clauses must end with a period");
+    errors.push("No clause terminator (.) found — every Prolog clause must end with a period");
+  } else if (!stripped.endsWith(".")) {
+    errors.push("Last clause is not terminated with a period (.) — every Prolog clause must end with a period");
   }
 
   // Check: balanced parentheses
