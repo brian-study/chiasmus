@@ -17,6 +17,14 @@ export interface FormalizeResult {
 /** Result of solve() — includes solver result + correction history */
 export interface SolveResult {
   result: SolverResult;
+  /**
+   * Whether the correction loop terminated cleanly — i.e. the solver returned
+   * a non-error result (sat / unsat / unknown / success) rather than erroring
+   * out or exhausting its rounds. This is NOT a verdict on the property:
+   * `converged: true` with `result.status: "unsat"` means "the solver ran and
+   * found no counterexample in the given model", which is not a proof. Read
+   * `result.status` for the actual answer.
+   */
   converged: boolean;
   rounds: number;
   history: CorrectionAttempt[];

@@ -33,6 +33,14 @@ import { parseMermaid } from "./graph/mermaid.js";
 import type { CraftInput } from "./skills/craft.js";
 import { buildReviewPlan } from "./review.js";
 import type { ReviewFocus } from "./review.js";
+import { createRequire } from "node:module";
+
+// Single source of truth for the version reported to MCP clients over the
+// wire — read from package.json so it can never drift from the published
+// release. `../package.json` resolves to the package root from both the
+// compiled location (dist/mcp-server.js) and the source (src/mcp-server.ts).
+const require = createRequire(import.meta.url);
+const { version: SERVER_VERSION } = require("../package.json") as { version: string };
 
 export function getChiasmusHome(): string {
   return process.env.CHIASMUS_HOME ?? join(homedir(), ".chiasmus");
@@ -171,7 +179,7 @@ Guided workflow:
     description: `End-to-end: select template → fill slots → lint → verify → correction loop.
 
 Needs ANTHROPIC_API_KEY | DEEPSEEK_API_KEY | OPENAI_API_KEY. Without key → falls back to chiasmus_formalize.
-Returns: verified result + template used + correction history.`,
+Returns: solver result + template used + correction history. NOTE: \`converged: true\` means the correction loop reached a non-error solver result — it does NOT mean the property holds. Read \`result.status\` (sat / unsat / unknown) for the actual verdict; an \`unsat\` ("no counterexample in this model") is not a proof.`,
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -1234,7 +1242,7 @@ export async function createChiasmusServer(
   const embeddingHome = home;
 
   const server = new Server(
-    { name: "chiasmus", version: "0.1.0" },
+    { name: "chiasmus", version: SERVER_VERSION },
     { capabilities: { tools: {} } }
   );
 

@@ -86,6 +86,28 @@ describe("Spec Linting", () => {
       expect(result.errors[0]).toMatch(/period/i);
     });
 
+    it("catches an unterminated last clause in a multi-clause spec", () => {
+      // The first clause IS terminated, so the old `includes(".")` check
+      // passed this and gave false confidence before the solver rejected it.
+      const result = lintSpec(
+        "parent(tom, bob).\nparent(bob, ann)",
+        "prolog"
+      );
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0]).toMatch(/period/i);
+    });
+
+    it("catches a spec whose only period is a float decimal point", () => {
+      // `3.14` contains a `.`, so `includes(".")` was satisfied and the old
+      // check passed an entirely unterminated clause.
+      const result = lintSpec(
+        "weight(item, 3.14)",
+        "prolog"
+      );
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors[0]).toMatch(/period/i);
+    });
+
     it("catches unbalanced Prolog parentheses", () => {
       const result = lintSpec(
         "parent(tom, bob.\nparent(bob, ann).",
@@ -113,6 +135,16 @@ describe("Spec Linting", () => {
       );
       expect(result.errors).toHaveLength(0);
       expect(result.fixes).toHaveLength(0);
+    });
+
+    it("Prolog with a float in a terminated clause passes", () => {
+      // The decimal point in 3.14 must not be confused with the clause
+      // terminator: the clause IS terminated, so no error.
+      const result = lintSpec(
+        "weight(item, 3.14).",
+        "prolog"
+      );
+      expect(result.errors).toHaveLength(0);
     });
 
     it("Z3 with comments passes", () => {
