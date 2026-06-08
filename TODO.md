@@ -18,9 +18,16 @@ upstream and our local versions were dropped as superseded:
   only"; shared search-text helper). Our `fdf000b`/`d413cdb` dropped. Validated
   live on our daemon (the Azure embedding config drives the re-rank).
 
+- ✅ **Issue #36 nits FIXED by us, MERGED upstream** → PR
+  [#37](https://github.com/yogthos/chiasmus/pull/37), upstream merge `576ed38`
+  (2026-06-08). `serverInfo.version` now sourced from `package.json`; `converged`
+  documented as "loop ran" ≠ "property holds" at all 3 surfaces; the Prolog lint
+  now checks clause termination. All three dropped from Open below.
+
 The fork now carries ONLY: the HTTP-daemon mode (`src/mcp-http-server.ts`), the
-build-on-install prepare script, and this TODO. Re-sync periodically:
-`git fetch upstream && git rebase upstream/main` (our 2 commits replay cleanly).
+build-on-install prepare script, and this TODO. Last rebased onto `576ed38`
+(post-#37). Re-sync periodically: `git fetch upstream && git rebase upstream/main`
+(our commits replay cleanly).
 
 ## Open
 
@@ -30,12 +37,10 @@ build-on-install prepare script, and this TODO. Re-sync periodically:
 > selection precision as lower-confidence "also noticed" mentions. `solve` fill
 > non-determinism deliberately NOT filed (inherent LLM limitation, not a defect).
 >
-> **→ PR [yogthos/chiasmus#37](https://github.com/yogthos/chiasmus/pull/37) opened
-> (2026-06-08)** — maintainer said PRs welcome. Three confirmed nits, one commit
-> each, branched from `upstream/main`: `fix(mcp)` version from package.json,
-> `docs(solve)` converged≠proven at all 3 surfaces, `fix(lint)` Prolog clause
-> termination. The two "also noticed" items left out (need root-causing). Awaiting
-> review.
+> **→ PR [yogthos/chiasmus#37](https://github.com/yogthos/chiasmus/pull/37) MERGED
+> (2026-06-08, upstream `576ed38`)** — all three confirmed nits fixed and now in
+> our `main` via the rebase. The two "also noticed" items (`chiasmus_learn`
+> promotion, within-domain precision) were left out — still open below.
 
 - **`chiasmus_solve` fill non-determinism.** Selector + fill are fixed, but the
   model is still LLM-authored → no hard guarantee (a different, possibly-wrong
@@ -50,13 +55,10 @@ build-on-install prepare script, and this TODO. Re-sync periodically:
   Lever: also embed the skeleton/tips (currently excluded from the search text),
   or a better embedding model.
 
-- **[upstream] `converged`/`unsat` ≠ "property holds" — API foot-gun.** A solver
-  result of `unsat` / "no solutions" / `converged: true` means only that the
-  solver ran and found no counterexample in the *given* model. A consumer reading
-  `converged → safe` silently clears bugs (the lane carries a guard for this). The
-  result shape should separate "ran" from "holds" so the API can't be misread.
-  → **PR #37** takes the documentation route (no result-shape change); a stronger
-  separate-the-shape fix could still follow if the maintainer wants it.
+- **[upstream, optional] `converged` shape vs docs.** PR #37 documented that
+  `converged` ≠ "property holds" (merged). A stronger fix — separating "ran" from
+  "holds" in the result *shape* so it can't be misread at all — remains possible if
+  the maintainer wants it. Low priority now the docs + lane guard cover it.
 
 - **`chiasmus_learn` is broken — fix or formally retire.** Audit-damning: persists
   wrong generalizations (collapsed a 3-edge graph to 1 → a cycle rule that can
@@ -64,13 +66,9 @@ build-on-install prepare script, and this TODO. Re-sync periodically:
   gate dead (learned rows never promoted). Currently SKIP in the lane. Either fix
   the pipeline or disable the tool to stop it polluting the formalize/search space.
 
-- **[upstream] `serverInfo.version` hardcoded `0.1.0`.** The daemon self-reports
-  `0.1.0` regardless of `package.json` — can't trust the running version. Wire it
-  to `package.json`. → **PR #37** (awaiting review).
-
 ## Low value (noted, not planned)
 
-- **`chiasmus_lint`** — the prolog period-check is cosmetic (`includes(".")`);
-  `chiasmus_verify` is the real syntax oracle. Keep `lint` as the internal
-  pre-solver auto-fixer only; not worth surfacing as a review tool. → **PR #37**
-  tightens it (clause-termination check + corrected message) but keeps it internal.
+- **`chiasmus_lint`** — the prolog period-check was cosmetic; PR #37 tightened it
+  (clause-termination check + corrected message), merged upstream. `lint` stays the
+  internal pre-solver auto-fixer; `chiasmus_verify` remains the real syntax oracle.
+  Not worth surfacing as a review tool.
