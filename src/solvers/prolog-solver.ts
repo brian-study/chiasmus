@@ -10,6 +10,16 @@ const MAX_TRACE_ENTRIES = 500;
 const LIMIT_MARKER_VAR = "ChiasmusLimitResult_3F2A1B";
 const LIMIT_EXCEEDED_ATOM = "inference_limit_exceeded";
 
+// Variables introduced by the catch wrapper around every user goal (see
+// `wrapped` in solve()). On the success path they stay unbound, and
+// prolog-wasm-full surfaces them in the top-level bindings (tau-prolog did
+// not) — polluting answers with `{"$t":"v","v":N}` noise. Named
+// collision-resistantly so a user program reusing `Err`/`EStr` is not
+// shadowed, and stripped from every answer via INTERNAL_VARS.
+const ERR_VAR = "ChiasmusErr_3F2A1B";
+const ERR_STR_VAR = "ChiasmusErrStr_3F2A1B";
+const INTERNAL_VARS = new Set([LIMIT_MARKER_VAR, ERR_VAR, ERR_STR_VAR]);
+
 const SAFE_PATH_RE = /^[/A-Za-z0-9_.-]+$/;
 
 // prolog-wasm-full has a single-init lifecycle (Emscripten factory
@@ -212,7 +222,7 @@ function runQuery(
 
         const bindings: Record<string, string> = {};
         for (const [k, v] of Object.entries(rawBindings)) {
-          if (k === LIMIT_MARKER_VAR) continue;
+          if (INTERNAL_VARS.has(k)) continue;
           bindings[k] = termToProlog(v);
         }
         answers.push(bindings);
@@ -584,9 +594,9 @@ export function createPrologSolver(): Solver {
       const wrapped =
         `catch(` +
         `call_with_inference_limit((${moduleId}:(${normalized})), ${inferenceBudget}, ${LIMIT_MARKER_VAR}), ` +
-        `Err, ` +
-        `(with_output_to(string(EStr), write(Err)), ` +
-        `assertz(user:'$chiasmus_msg'(error, EStr)), fail))`;
+        `${ERR_VAR}, ` +
+        `(with_output_to(string(${ERR_STR_VAR}), write(${ERR_VAR})), ` +
+        `assertz(user:'$chiasmus_msg'(error, ${ERR_STR_VAR})), fail))`;
 
       clearMessages(pl);
       const queryResult = runQuery(pl, wrapped, { detectLimitMarker: true });

@@ -414,4 +414,61 @@ describe("PrologSolver", () => {
       }
     });
   });
+
+  describe("wrapper-variable hygiene", () => {
+    // Regression: the catch/inference-limit wrapper around every user goal
+    // introduces helper variables. prolog-wasm-full surfaces them unbound on
+    // the success path (tau-prolog did not), polluting answers with
+    // `{"$t":"v","v":N}` noise. They must be stripped from every binding set.
+    it("does not leak internal wrapper variables into bindings", async () => {
+      solver = createPrologSolver();
+      const result = await solver.solve({
+        type: "prolog",
+        program: `color(red). color(green). sound :- color(red).`,
+        query: "color(X).",
+      });
+      expect(result.status).toBe("success");
+      if (result.status === "success") {
+        for (const answer of result.answers) {
+          expect(Object.keys(answer.bindings)).toEqual(["X"]);
+          expect(answer.formatted).not.toMatch(/Err|EStr|Chiasmus|\$t/);
+        }
+      }
+    });
+
+    it("renders a ground goal as clean `true` with no spurious bindings", async () => {
+      solver = createPrologSolver();
+      const result = await solver.solve({
+        type: "prolog",
+        program: `color(red). sound :- color(red).`,
+        query: "sound.",
+      });
+      expect(result.status).toBe("success");
+      if (result.status === "success") {
+        expect(result.answers).toHaveLength(1);
+        expect(result.answers[0].bindings).toEqual({});
+        expect(result.answers[0].formatted).toBe("true");
+      }
+    });
+
+    it("strips the leaked wrapper var while preserving a user binding of the same name", async () => {
+      // The user binds `Err` to a real value but never mentions `EStr`. On the
+      // unfixed engine the wrapper's `EStr` leaks as an extra binding (the
+      // wrapper's `Err` happens to share the user's name and collapse onto the
+      // user value, but `EStr` does not) — so base returns ['Err','EStr'].
+      // The rename + strip leaves exactly the user's `Err` and drops `EStr`.
+      solver = createPrologSolver();
+      const result = await solver.solve({
+        type: "prolog",
+        program: `holds(captured).`,
+        query: "holds(Err).",
+      });
+      expect(result.status).toBe("success");
+      if (result.status === "success") {
+        expect(result.answers).toHaveLength(1);
+        expect(result.answers[0].bindings.Err).toBe("captured");
+        expect(Object.keys(result.answers[0].bindings)).toEqual(["Err"]);
+      }
+    });
+  });
 });
