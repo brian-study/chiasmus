@@ -7,10 +7,10 @@ guide is `AGENTS.md`; PR style is terse Title Case + `## Problem`/`## Fix`/`## T
 Context: this fork carries the lab harness's chiasmus-verification lane work — see
 `harness-plugin/docs/plans/2026-06-08-chiasmus-verification-lane.md`.
 
-## Synced to upstream 0.1.24 (2026-06-08)
+## Synced to upstream 0.1.29 (2026-09-04)
 
-The fork was rebased onto `yogthos/chiasmus` 0.1.24. Three of our fixes are now
-upstream and our local versions were dropped as superseded:
+The fork is merged with the upstream `main` published as 0.1.29. Four fixes
+originating here are now upstream and the fork uses their upstream versions:
 - ✅ **PR #34 (Err/EStr binding fix) MERGED** → upstream `a9826ec` (0.1.22).
 - ✅ **Issue #35 (selector + fill) FIXED by upstream** → `3aadfea` (0.1.23/0.1.24).
   Upstream's fix is functionally identical to ours (optional `EmbeddingAdapter`
@@ -24,10 +24,23 @@ upstream and our local versions were dropped as superseded:
   documented as "loop ran" ≠ "property holds" at all 3 surfaces; the Prolog lint
   now checks clause termination. All three dropped from Open below.
 
-The fork now carries ONLY: the HTTP-daemon mode (`src/mcp-http-server.ts`), the
-build-on-install prepare script, and this TODO. Last rebased onto `576ed38`
-(post-#37). Re-sync periodically: `git fetch upstream && git rebase upstream/main`
-(our commits replay cleanly).
+- ✅ **Prolog WASM teardown corruption FIXED by us, MERGED upstream** → PR
+  [#40](https://github.com/yogthos/chiasmus/pull/40), published as 0.1.29. The fix
+  removes the blanket weak `library(lists)` import, namespaces the generated
+  graph membership helper, and consults/tears down once per batch. The merged
+  tree passes the collision-shaped regression and repeated in-process and live
+  HTTP solver acceptance.
+
+The fork-specific delta is the HTTP-daemon mode (`src/mcp-http-server.ts`), the
+build-on-install prepare script, this TODO, and a package-version marker matching
+the published release (upstream published 0.1.29 without committing that version
+bump). Re-sync published `main` without rewriting it:
+
+```bash
+git fetch upstream
+git switch main
+git merge --no-edit upstream/main
+```
 
 ## Open
 
