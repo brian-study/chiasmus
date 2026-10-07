@@ -119,9 +119,10 @@ function unusedHelper() {}
     expect(text).toContain("# Codebase overview");
     expect(text).toContain(`**Files:** ${corpus.length}`);
     // In-process the ticker cannot fire until the whole extraction is done,
-    // so the lag equals the job time. Off-thread it is scheduler noise.
-    expect(maxLag).toBeLessThan(1_000);
-    expect(maxLag).toBeLessThan(jobMs / 4);
+    // so the lag equals the job time and only a tick or two land. Off-thread
+    // the lag is scheduler noise. Both bounds are relative to the job time,
+    // which stretches with host load like the noise does.
+    expect(maxLag).toBeLessThan(jobMs / 2);
     expect(ticks).toBeGreaterThan(jobMs / 100);
   }, 60_000);
 

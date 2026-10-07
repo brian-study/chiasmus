@@ -100,7 +100,9 @@ describe("detectBridges: sampled regime (large graphs)", () => {
     const t0 = performance.now();
     const r = await runAnalysisFromGraph(big, { analysis: "bridges" });
     const elapsed = performance.now() - t0;
-    expect(elapsed).toBeLessThan(5_000);
+    // ~0.4 s sampled on an idle host, ~39 s exact: a wide bound that a
+    // loaded CI host won't trip, still a clean red for the exact path.
+    expect(elapsed).toBeLessThan(15_000);
     expect(r.analysis).toBe("bridges");
     const approx = (r as unknown as { approximate?: Record<string, unknown> }).approximate;
     expect(approx).toBeDefined();

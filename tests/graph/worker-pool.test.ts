@@ -136,14 +136,15 @@ describe("GraphWorkerPool", () => {
 
   it("bounds the queue and rejects excess jobs immediately", async () => {
     const pool = makePool({ maxQueue: 1 });
-    const running = run(pool, { mode: "sleep", ms: 200 });
-    const queued = run(pool, { mode: "ok" });
-    const t0 = performance.now();
-    const rejected = await run(pool, { mode: "ok" });
-    expect(performance.now() - t0).toBeLessThan(100);
+    const settled: string[] = [];
+    const running = run(pool, { mode: "sleep", ms: 200 }).then((r) => (settled.push("running"), r));
+    const queued = run(pool, { mode: "ok" }).then((r) => (settled.push("queued"), r));
+    const rejected = await run(pool, { mode: "ok" }).then((r) => (settled.push("rejected"), r));
     expect(rejected.error).toBe("graph worker queue is full (1 jobs waiting); retry later");
     expect((await running).mode).toBe("sleep");
     expect((await queued).mode).toBe("ok");
+    // Rejected without waiting for the running job.
+    expect(settled).toEqual(["rejected", "running", "queued"]);
   });
 
   it("drops a queued job whose request was cancelled, without running it", async () => {
