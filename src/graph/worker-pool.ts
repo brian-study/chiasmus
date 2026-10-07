@@ -14,7 +14,8 @@
  *     job (web-tree-sitter's WASM heap only grows and lives outside
  *     resourceLimits, and native tree-sitter memory only goes back to the
  *     OS when the thread exits),
- *   - has served maxJobsPerWorker jobs, or sits idle past idleTimeoutMs.
+ *   - has served maxJobsPerWorker jobs, or sits idle past idleTimeoutMs,
+ *   - is running a job whose request was cancelled.
  */
 
 import { Worker, SHARE_ENV, type ResourceLimits } from "node:worker_threads";
@@ -29,6 +30,8 @@ export interface GraphJob {
   args: Record<string, unknown>;
   /** Run chiasmus-adapter-* discovery in the worker before the job (config.adapterDiscovery). */
   discoverAdapters?: boolean;
+  /** The MCP request's signal: a cancelled job is dropped if queued, stopped if running. */
+  signal?: AbortSignal;
 }
 
 /** main → worker */
@@ -104,7 +107,7 @@ const DEFAULTS = {
   cancelGraceMs: 3_000,
 };
 
-type RecycleReason = "crash" | "fatal-wasm" | "timeout" | "memory" | "max-jobs" | "idle" | "shutdown";
+type RecycleReason = "crash" | "fatal-wasm" | "timeout" | "cancelled" | "memory" | "max-jobs" | "idle" | "shutdown";
 
 interface Slot {
   worker: Worker;
@@ -126,6 +129,10 @@ interface Pending {
 
 function errorResult(message: string): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify({ error: message }) }] };
+}
+
+function cancelledResult(job: GraphJob): CallToolResult {
+  return errorResult(`${job.tool} was cancelled by the client`);
 }
 
 /** Flags (with their values) a source worker needs: module loaders and resolve conditions. */
@@ -201,13 +208,24 @@ export class GraphWorkerPool {
   /** Queue a job. Never rejects: failures come back as `{ error }` tool results. */
   run(job: GraphJob): Promise<CallToolResult> {
     if (this.closed) return Promise.resolve(errorResult("graph worker pool is shut down"));
+    if (job.signal?.aborted) return Promise.resolve(cancelledResult(job));
     if (this.active && this.queue.length >= this.opts.maxQueue) {
       return Promise.resolve(errorResult(
         `graph worker queue is full (${this.queue.length} jobs waiting); retry later`,
       ));
     }
     return new Promise((resolve) => {
-      this.queue.push({ id: this.nextId++, job, resolve });
+      const pending: Pending = { id: this.nextId++, job, resolve };
+      const signal = job.signal;
+      if (signal) {
+        const onAbort = () => this.cancel(pending);
+        signal.addEventListener("abort", onAbort, { once: true });
+        pending.resolve = (r) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(r);
+        };
+      }
+      this.queue.push(pending);
       this.pump();
     });
   }
@@ -316,6 +334,26 @@ export class GraphWorkerPool {
     this.clearJobTimer();
     this.active = null;
     failed.resolve(errorResult(`graph worker crashed while running ${failed.job.tool}: ${detail}`));
+    this.pump();
+  }
+
+  /**
+   * The job's request was cancelled (client cancellation or disconnect):
+   * drop it if still queued; if running, stop its worker as on a timeout,
+   * so the next job doesn't wait behind work nobody will read.
+   */
+  private cancel(p: Pending): void {
+    const queued = this.queue.indexOf(p);
+    if (queued !== -1) {
+      this.queue.splice(queued, 1);
+      p.resolve(cancelledResult(p.job));
+      return;
+    }
+    if (this.active !== p || !p.slot) return;
+    this.clearJobTimer();
+    this.active = null;
+    this.retire(p.slot, "cancelled");
+    p.resolve(cancelledResult(p.job));
     this.pump();
   }
 

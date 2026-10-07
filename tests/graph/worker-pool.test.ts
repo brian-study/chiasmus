@@ -146,6 +146,39 @@ describe("GraphWorkerPool", () => {
     expect((await queued).mode).toBe("ok");
   });
 
+  it("drops a queued job whose request was cancelled, without running it", async () => {
+    const pool = makePool();
+    const running = run(pool, { mode: "sleep", ms: 200 });
+    const ac = new AbortController();
+    const cancelled = pool.run({ tool: "chiasmus_map", args: { mode: "ok" }, signal: ac.signal });
+    ac.abort();
+    const r = JSON.parse((await cancelled).content[0].text as string);
+    expect(r.error).toBe("chiasmus_map was cancelled by the client");
+    await running;
+    // The cancelled job never reached the worker.
+    expect((await run(pool, { mode: "ok" })).jobs).toBe(2);
+  });
+
+  it("stops a running job whose request was cancelled and moves on", async () => {
+    const pool = makePool();
+    const before = await run(pool, { mode: "ok" });
+    const ac = new AbortController();
+    const job = pool.run({ tool: "chiasmus_graph", args: { mode: "spin-until-cancelled" }, signal: ac.signal });
+    await new Promise((r) => setTimeout(r, 100));
+    ac.abort();
+    const settled = await Promise.race([job, new Promise((r) => setTimeout(() => r("still running"), 5_000))]);
+    expect(settled).not.toBe("still running");
+    expect(JSON.parse((settled as any).content[0].text).error).toBe("chiasmus_graph was cancelled by the client");
+    const after = await run(pool, { mode: "ok" });
+    expect(after.threadId).not.toBe(before.threadId);
+  });
+
+  it("refuses a job whose request was already cancelled", async () => {
+    const pool = makePool();
+    const r = await pool.run({ tool: "chiasmus_graph", args: { mode: "ok" }, signal: AbortSignal.abort() });
+    expect(JSON.parse((r.content as Array<{ text: string }>)[0].text).error).toBe("chiasmus_graph was cancelled by the client");
+  });
+
   it("releases an idle worker after idleTimeoutMs", async () => {
     const pool = makePool({ idleTimeoutMs: 100 });
     const a = await run(pool, { mode: "ok" });

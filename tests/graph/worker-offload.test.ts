@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createChiasmusServer } from "../../src/mcp-server.js";
 import { runAnalysis, MAX_FILE_SIZE } from "../../src/graph/analyses.js";
 import { MockLLMAdapter } from "../../src/llm/mock.js";
-import { shutdownGraphWorkers } from "../../src/graph/worker-pool.js";
+import { GraphWorkerPool, shutdownGraphWorkers, type GraphJob } from "../../src/graph/worker-pool.js";
 import { mkdtemp, rm, writeFile, truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -171,6 +171,30 @@ function unusedHelper() {}
     expect(JSON.parse(await call("chiasmus_map", { files: [join(root, "missing.ts")] })).error)
       .toBe("No files could be read");
   });
+
+  it("hands the request's abort signal to the pool, which drops the cancelled job", async () => {
+    const runSpy = vi.spyOn(GraphWorkerPool.prototype, "run");
+    try {
+      const ac = new AbortController();
+      const big = client.callTool({ name: "chiasmus_map", arguments: { files: corpus } }, undefined, {
+        signal: ac.signal,
+        timeout: 120_000,
+      });
+      await vi.waitFor(() => expect(runSpy).toHaveBeenCalled());
+      const job = runSpy.mock.calls[0][0] as GraphJob;
+      expect(job.signal).toBeInstanceOf(AbortSignal);
+      ac.abort();
+      await expect(big).rejects.toThrow();
+      // The client's notifications/cancelled reaches the server's signal.
+      await vi.waitFor(() => expect(job.signal!.aborted).toBe(true));
+      const result = await runSpy.mock.results[0].value;
+      expect(JSON.parse(result.content[0].text).error).toBe("chiasmus_map was cancelled by the client");
+    } finally {
+      runSpy.mockRestore();
+    }
+    // The pool moves on to the next call.
+    expect(JSON.parse(await call("chiasmus_graph", { files: small, analysis: "summary" })).result.files).toBe(3);
+  }, 60_000);
 
   it("serves concurrent graph calls", async () => {
     const results = await Promise.all([

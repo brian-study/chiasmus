@@ -1055,7 +1055,7 @@ export async function createChiasmusServer(
     async complete() { return ""; },
   }, embedding ?? undefined);
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
 
     switch (name) {
@@ -1072,13 +1072,17 @@ export async function createChiasmusServer(
       case "chiasmus_lint":
         return handleLint(args ?? {});
       case "chiasmus_graph":
-        return runGraphTool({ tool: "chiasmus_graph", args: args ?? {}, discoverAdapters: config.adapterDiscovery });
+        return runGraphTool({
+          tool: "chiasmus_graph", args: args ?? {}, discoverAdapters: config.adapterDiscovery, signal: extra.signal,
+        });
       case "chiasmus_craft":
         return handleCraft(library, args ?? {});
       case "chiasmus_review":
         return handleReview(args ?? {});
       case "chiasmus_map":
-        return runGraphTool({ tool: "chiasmus_map", args: args ?? {}, discoverAdapters: config.adapterDiscovery });
+        return runGraphTool({
+          tool: "chiasmus_map", args: args ?? {}, discoverAdapters: config.adapterDiscovery, signal: extra.signal,
+        });
       case "chiasmus_search":
         return handleSearch(embedding, embeddingHome, args ?? {});
       default:
