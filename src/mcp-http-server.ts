@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage, type Server as HttpServer } from "n
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createChiasmusServer } from "./mcp-server.js";
+import { exitOnFatalSolverError } from "./solvers/fatal.js";
 import type { Server as McpProtocolServer } from "@modelcontextprotocol/sdk/server/index.js";
 import type { SkillLibrary } from "./skills/library.js";
 
@@ -270,6 +271,9 @@ const isMain = process.argv[1]?.endsWith("mcp-http-server.ts")
   || process.argv[1]?.endsWith("mcp-http-server.js");
 
 if (isMain) {
+  // A solver WASM abort leaves the process hung rather than dead, so
+  // Restart=on-failure never fired; exit so it does.
+  exitOnFatalSolverError();
   try {
     const options = parseHttpOptions();
     await startChiasmusHttpServer(options);
