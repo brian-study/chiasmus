@@ -109,6 +109,14 @@ describe("MCP HTTP session start failures", () => {
     return `http://127.0.0.1:${address.port}`;
   }
 
+  // The server closes a session after it has answered, so the client can see
+  // the response before the close has run.
+  async function expectClosedOnce(...closes: Array<ReturnType<typeof vi.spyOn>>): Promise<void> {
+    await vi.waitFor(() => {
+      for (const close of closes) expect(close).toHaveBeenCalledOnce();
+    }, { timeout: 5_000 });
+  }
+
   async function postInitialize(base: string, accept: string): Promise<Response> {
     return fetch(`${base}/mcp`, {
       method: "POST",
@@ -136,8 +144,7 @@ describe("MCP HTTP session start failures", () => {
     const res = await postInitialize(base, "application/json");
 
     expect(res.status).toBe(406);
-    expect(serverClose).toHaveBeenCalledOnce();
-    expect(libraryClose).toHaveBeenCalledOnce();
+    await expectClosedOnce(serverClose, libraryClose);
     expect(await (await fetch(`${base}/healthz`)).json()).toMatchObject({ sessions: 0 });
   });
 
@@ -151,8 +158,7 @@ describe("MCP HTTP session start failures", () => {
     const res = await postInitialize(base, "application/json, text/event-stream");
 
     expect(res.status).toBe(500);
-    expect(serverClose).toHaveBeenCalledOnce();
-    expect(libraryClose).toHaveBeenCalledOnce();
+    await expectClosedOnce(serverClose, libraryClose);
   });
 
   it("closes the server and library when the first request throws", async () => {
@@ -166,8 +172,7 @@ describe("MCP HTTP session start failures", () => {
     const res = await postInitialize(base, "application/json, text/event-stream");
 
     expect(res.status).toBe(500);
-    expect(serverClose).toHaveBeenCalledOnce();
-    expect(libraryClose).toHaveBeenCalledOnce();
+    await expectClosedOnce(serverClose, libraryClose);
   });
 
   it("keeps the library open for a session that did initialize", async () => {
@@ -183,7 +188,7 @@ describe("MCP HTTP session start failures", () => {
       expect(libraryClose).not.toHaveBeenCalled();
 
       await transport.terminateSession();
-      expect(libraryClose).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(libraryClose).toHaveBeenCalledOnce(), { timeout: 5_000 });
     } finally {
       await client.close().catch(() => undefined);
     }
