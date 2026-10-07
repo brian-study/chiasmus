@@ -231,7 +231,7 @@ Defined by `GRAPH_ANALYSES` in `src/mcp-server.ts` and dispatched by `runAnalysi
 | `layer-violation` | — | Calls that skip layers (e.g. handler → db bypassing service) |
 | `communities` | — | Louvain clusters (seed=42) with cohesion scores |
 | `hubs` | — | Top-degree nodes |
-| `bridges` | — | Top betweenness — nodes connecting otherwise-separate subgraphs |
+| `bridges` | — | Top betweenness — nodes connecting otherwise-separate subgraphs. Exact up to 2,000 nodes; above that a deterministic 500-pivot Brandes estimate, flagged by a top-level `approximate` field (and a `%` comment before `bridge/2` facts) |
 | `surprises` | — | Cross-community + peripheral → hub edges |
 | `diff` | `against` | Current graph vs a saved snapshot; covers nodes, edges, imports, exports, hyperedges |
 | `entry-points` | — | Zero-in-degree exports (feeds `dead-code`) |
