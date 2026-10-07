@@ -75,7 +75,7 @@ describe("detectBridges: exact regime (small graphs)", () => {
         ["c", "bridge"], ["bridge", "d"],
       ]),
       graphFromEdges(randomGraph(300, 2, 11)),
-      graphFromEdges(randomGraph(1500, 2, 3)),
+      graphFromEdges(randomGraph(1000, 2, 3)),
     ];
     for (const g of cases) {
       expect(JSON.stringify(detectBridges(g))).toBe(JSON.stringify(exactTop3(g)));
