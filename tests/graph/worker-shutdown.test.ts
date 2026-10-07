@@ -10,6 +10,38 @@ const run = promisify(execFile);
 const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/close-busy-pool.ts", import.meta.url));
 
+interface FixtureRun {
+  code: number | string;
+  stderr: string;
+  report: { outcome: string; terminateCalls: number; closeMs: number } | null;
+}
+
+async function closeBusyPool(files: string[], env: Record<string, string> = {}): Promise<FixtureRun> {
+  let stdout = "";
+  let stderr = "";
+  let code: number | string = 0;
+  try {
+    ({ stdout, stderr } = await run(process.execPath, ["--import", "tsx", FIXTURE, files[0], ...files], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, ...env },
+      timeout: 90_000,
+      maxBuffer: 16 * 1024 * 1024,
+    }));
+  } catch (e) {
+    const err = e as { code?: number | string; signal?: string; stdout?: string; stderr?: string };
+    code = err.signal ?? err.code ?? "unknown";
+    stdout = err.stdout ?? "";
+    stderr = err.stderr ?? "";
+  }
+  let report: FixtureRun["report"] = null;
+  try {
+    report = JSON.parse(stdout.trim());
+  } catch {
+    // reported below through the assertions
+  }
+  return { code, stderr, report };
+}
+
 /**
  * worker.terminate() — and process.exit() — while the graph worker is inside
  * native tree-sitter makes node-addon-api throw a Napi::Error that escapes
@@ -19,11 +51,12 @@ const FIXTURE = fileURLToPath(new URL("./fixtures/close-busy-pool.ts", import.me
  */
 describe("closing the pool while the worker is busy", () => {
   let root: string;
-  let files: string[];
+  let tsFiles: string[];
+  let cljFiles: string[];
 
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), "chiasmus-close-busy-"));
-    files = [];
+    tsFiles = [];
     for (let f = 0; f < 300; f++) {
       let src = "";
       for (let i = 0; i < 40; i++) {
@@ -31,7 +64,19 @@ describe("closing the pool while the worker is busy", () => {
       }
       const p = join(root, `m${f}.ts`);
       await writeFile(p, src);
-      files.push(p);
+      tsFiles.push(p);
+    }
+    // ~10 MB of Clojure: without the pre-parse check the batch ran ~3.5-4 s
+    // past close() at load ~60 on 24 CPUs; with it the worker exits in ~0.1 s.
+    cljFiles = [];
+    for (let f = 0; f < 1200; f++) {
+      let src = `(ns app.m${f}\n  (:require [app.m${(f + 1) % 1200} :as next]))\n`;
+      for (let i = 0; i < 60; i++) {
+        src += `(defn f${f}-${i} [a b]\n  (let [x (next/f${(f + 1) % 1200}-${i} a b)]\n    (+ x (g${i} a) (h${f} b ${i}))))\n`;
+      }
+      const p = join(root, `m${f}.clj`);
+      await writeFile(p, src);
+      cljFiles.push(p);
     }
   });
 
@@ -39,28 +84,23 @@ describe("closing the pool while the worker is busy", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("stops the worker without aborting the process", async () => {
-    // Each attempt aborted 2 times in 3 before the fix; three attempts make
-    // a lucky pass unlikely.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      let stdout = "";
-      let stderr = "";
-      let code: number | string | null = 0;
-      try {
-        ({ stdout, stderr } = await run(process.execPath, ["--import", "tsx", FIXTURE, files[0], ...files], {
-          cwd: REPO_ROOT,
-          timeout: 90_000,
-          maxBuffer: 16 * 1024 * 1024,
-        }));
-      } catch (e) {
-        const err = e as { code?: number | string; signal?: string; stdout?: string; stderr?: string };
-        code = err.signal ?? err.code ?? "unknown";
-        stdout = err.stdout ?? "";
-        stderr = err.stderr ?? "";
-      }
-      expect(stderr).not.toMatch(/Napi::Error|terminate called/);
-      expect(code).toBe(0);
-      expect(stdout.trim()).toBe("closed-mid-job");
-    }
-  }, 240_000);
+  it("stops a worker inside native extraction without terminate() or an abort", async () => {
+    // Grace far above any cooperative stop: a terminate() call means the
+    // cooperative path broke, deterministically — whereas whether an early
+    // terminate() happens to land inside native code (and abort) is luck.
+    const r = await closeBusyPool(tsFiles);
+    expect(r.stderr).not.toMatch(/Napi::Error|terminate called/);
+    expect(r.code).toBe(0);
+    expect(r.report).toMatchObject({ outcome: "closed-mid-job", terminateCalls: 0 });
+  }, 120_000);
+
+  it("stops a worker parsing WASM grammars (Clojure) within the grace period", async () => {
+    // These files parse after an await, so the cancel flag must be checked
+    // right before each parse; otherwise the whole batch runs on, past the
+    // grace period, and the pool falls back to terminate().
+    const r = await closeBusyPool(cljFiles, { CANCEL_GRACE_MS: "1000" });
+    expect(r.code).toBe(0);
+    expect(r.report).toMatchObject({ outcome: "closed-mid-job", terminateCalls: 0 });
+    expect(r.report!.closeMs).toBeLessThan(1_000);
+  }, 120_000);
 });
