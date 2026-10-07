@@ -67,7 +67,6 @@ src/
 │   ├── diff.ts            # graphDiff — set diff on nodes + (src,tgt) edge keys
 │   ├── entry-points.ts    # Heuristic entry-point detection (zero-in-degree exports)
 │   ├── cache.ts           # SHA256 per-file cache + LRU eviction + named snapshots (proper-lockfile)
-│   ├── repo-root.ts       # commonPathAncestor + findRepoRoot (git toplevel) — keys the cache per repo
 │   ├── tool-handlers.ts   # chiasmus_graph / chiasmus_map handlers (run inside the graph worker)
 │   ├── worker-pool.ts     # GraphWorkerPool — persistent worker thread, bounded queue, recycling
 │   ├── graph-worker.ts    # Worker-thread entry: runs one tool job, reports fatal-WASM + memory
@@ -244,7 +243,6 @@ Defined by `GRAPH_ANALYSES` in `src/mcp-server.ts` and dispatched by `runAnalysi
 Cache + snapshot workflow:
 
 - `cache=true` enables the SHA256 per-file extraction cache (`~/.cache/chiasmus` or `$CHIASMUS_CACHE_DIR`). Unchanged files skip re-parsing across calls.
-- The cache bucket (`repoKey`) is the analysed repository: the git toplevel above the files' common ancestor, else that ancestor (`repoKeyForFiles` / `findRepoRoot`). Snapshots saved for one repo are invisible to another; buckets from the old cwd-derived key are never read.
 - `save_snapshot="main"` persists the extracted `CodeGraph` under a name; requires `cache=true`.
 - `analysis="diff"` + `against="main"` compares current extraction to that snapshot.
 - Guard: `save_snapshot` and `against` naming the same snapshot is rejected — otherwise the save would clobber the baseline before the diff runs.

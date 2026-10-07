@@ -17,10 +17,7 @@ export {
   listSnapshots,
   deleteSnapshot,
   CACHE_SCHEMA_VERSION,
-  defaultRepoKey,
-  repoKeyForFiles,
 } from "./cache.js";
-export { commonPathAncestor, findRepoRoot } from "./repo-root.js";
 export type { CacheOptions, CachePaths } from "./cache.js";
 export { detectCommunities, cohesionScore } from "./community.js";
 export type { Community } from "./community.js";

@@ -9,7 +9,7 @@ import { readFileSync, statSync } from "node:fs";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { runAnalysis, MAX_FILE_SIZE } from "./analyses.js";
 import type { AnalysisType } from "./analyses.js";
-import { repoKeyForFiles } from "./cache.js";
+import { defaultRepoKey } from "./cache.js";
 import { extractGraph } from "./extractor.js";
 import { buildOverview, buildFileDetail, buildSymbolDetail, renderMap } from "./map.js";
 import type { MapFormat } from "./map.js";
@@ -51,8 +51,7 @@ export async function handleGraph(args: Record<string, unknown>): Promise<CallTo
   }
 
   try {
-    const repoKey = repoKeyForFiles(files as string[]);
-    const cacheOpts = args.cache === true ? { repoKey } : undefined;
+    const cacheOpts = args.cache === true ? { repoKey: defaultRepoKey() } : undefined;
     const result = await runAnalysis(files as string[], {
       analysis: analysis as AnalysisType,
       target: args.target as string | undefined,
@@ -64,7 +63,7 @@ export async function handleGraph(args: Record<string, unknown>): Promise<CallTo
       includeInsights: args.include_insights as boolean | undefined,
       // `diff` and `save_snapshot` both require the cache to locate on-disk
       // state — auto-enable when either is set.
-      cache: cacheOpts ?? ((args.save_snapshot || analysis === "diff") ? { repoKey } : undefined),
+      cache: cacheOpts ?? ((args.save_snapshot || analysis === "diff") ? { repoKey: defaultRepoKey() } : undefined),
     });
     // Compact JSON: pretty-printing doubled payload size for no benefit and
     // large graph analyses hit MCP stdio transport limits.
@@ -154,7 +153,7 @@ export async function handleMap(args: Record<string, unknown>): Promise<CallTool
   }
 
   try {
-    const cacheOpts = args.cache === true ? { repoKey: repoKeyForFiles(files as string[]) } : undefined;
+    const cacheOpts = args.cache === true ? { repoKey: defaultRepoKey() } : undefined;
     const graph = await extractGraph(loaded, cacheOpts ? { cache: cacheOpts } : {});
 
     // Negative `max_exports` slices from the end (`ranked.slice(0, -1)`),

@@ -23,7 +23,6 @@ import { buildSearchCorpus, runSearch } from "./search/engine.js";
 import { EmbeddingCache } from "./search/embedding-cache.js";
 import type { SolverResult } from "./solvers/types.js";
 import { MAX_FILE_SIZE } from "./graph/analyses.js";
-import { commonPathAncestor } from "./graph/repo-root.js";
 import { extractGraph } from "./graph/extractor.js";
 import { GRAPH_ANALYSES } from "./graph/tool-handlers.js";
 import { exitAfterStoppingGraphWorkers, runGraphTool, shutdownGraphWorkers } from "./graph/worker-pool.js";
@@ -298,7 +297,7 @@ ANALYSES:
         },
         cache: {
           type: "boolean",
-          description: "Enable persistent per-file extraction cache (default false). Unchanged files skip re-parsing across calls. Cache dir defaults to ~/.cache/chiasmus (or $CHIASMUS_CACHE_DIR); entries and snapshots are keyed by the analysed files' git repository.",
+          description: "Enable persistent per-file extraction cache (default false). Unchanged files skip re-parsing across calls. Cache dir defaults to ~/.cache/chiasmus (or $CHIASMUS_CACHE_DIR); repoKey derives from cwd.",
         },
       },
       required: ["files", "analysis"],
@@ -877,6 +876,25 @@ function handleReview(args: Record<string, unknown>): CallToolResult {
       content: [{ type: "text", text: JSON.stringify({ error: msg }) }],
     };
   }
+}
+
+/** Longest common absolute-path prefix across the given paths. */
+function commonPathAncestor(paths: string[]): string {
+  if (paths.length === 0) return "/";
+  const parts = paths.map((p) => p.split("/").filter(Boolean));
+  if (parts.length === 1) {
+    const p = [...parts[0]];
+    p.pop();
+    return "/" + p.join("/");
+  }
+  let i = 0;
+  const min = Math.min(...parts.map((p) => p.length));
+  while (i < min) {
+    const seg = parts[0][i];
+    if (!parts.every((p) => p[i] === seg)) break;
+    i++;
+  }
+  return "/" + parts[0].slice(0, i).join("/");
 }
 
 async function handleSearch(
