@@ -23,7 +23,8 @@ import { EmbeddingCache } from "./search/embedding-cache.js";
 import type { SolverResult } from "./solvers/types.js";
 import { runAnalysis, MAX_FILE_SIZE } from "./graph/analyses.js";
 import type { AnalysisType } from "./graph/analyses.js";
-import { defaultRepoKey } from "./graph/cache.js";
+import { repoKeyForFiles } from "./graph/cache.js";
+import { commonPathAncestor } from "./graph/repo-root.js";
 import { extractGraph } from "./graph/extractor.js";
 import { buildOverview, buildFileDetail, buildSymbolDetail, renderMap } from "./graph/map.js";
 import type { MapFormat } from "./graph/map.js";
@@ -306,7 +307,7 @@ ANALYSES:
         },
         cache: {
           type: "boolean",
-          description: "Enable persistent per-file extraction cache (default false). Unchanged files skip re-parsing across calls. Cache dir defaults to ~/.cache/chiasmus (or $CHIASMUS_CACHE_DIR); repoKey derives from cwd.",
+          description: "Enable persistent per-file extraction cache (default false). Unchanged files skip re-parsing across calls. Cache dir defaults to ~/.cache/chiasmus (or $CHIASMUS_CACHE_DIR); entries and snapshots are keyed by the analysed files' git repository.",
         },
       },
       required: ["files", "analysis"],
@@ -877,7 +878,8 @@ async function handleGraph(args: Record<string, unknown>): Promise<CallToolResul
   }
 
   try {
-    const cacheOpts = args.cache === true ? { repoKey: defaultRepoKey() } : undefined;
+    const repoKey = repoKeyForFiles(files as string[]);
+    const cacheOpts = args.cache === true ? { repoKey } : undefined;
     const result = await runAnalysis(files as string[], {
       analysis: analysis as AnalysisType,
       target: args.target as string | undefined,
@@ -889,7 +891,7 @@ async function handleGraph(args: Record<string, unknown>): Promise<CallToolResul
       includeInsights: args.include_insights as boolean | undefined,
       // `diff` and `save_snapshot` both require the cache to locate on-disk
       // state — auto-enable when either is set.
-      cache: cacheOpts ?? ((args.save_snapshot || analysis === "diff") ? { repoKey: defaultRepoKey() } : undefined),
+      cache: cacheOpts ?? ((args.save_snapshot || analysis === "diff") ? { repoKey } : undefined),
     });
     // Compact JSON: pretty-printing doubled payload size for no benefit and
     // large graph analyses hit MCP stdio transport limits.
@@ -1018,7 +1020,7 @@ async function handleMap(args: Record<string, unknown>): Promise<CallToolResult>
   }
 
   try {
-    const cacheOpts = args.cache === true ? { repoKey: defaultRepoKey() } : undefined;
+    const cacheOpts = args.cache === true ? { repoKey: repoKeyForFiles(files as string[]) } : undefined;
     const graph = await extractGraph(loaded, cacheOpts ? { cache: cacheOpts } : {});
 
     // Negative `max_exports` slices from the end (`ranked.slice(0, -1)`),
@@ -1069,25 +1071,6 @@ async function handleMap(args: Record<string, unknown>): Promise<CallToolResult>
       content: [{ type: "text", text: JSON.stringify({ error: msg }) }],
     };
   }
-}
-
-/** Longest common absolute-path prefix across the given paths. */
-function commonPathAncestor(paths: string[]): string {
-  if (paths.length === 0) return "/";
-  const parts = paths.map((p) => p.split("/").filter(Boolean));
-  if (parts.length === 1) {
-    const p = [...parts[0]];
-    p.pop();
-    return "/" + p.join("/");
-  }
-  let i = 0;
-  const min = Math.min(...parts.map((p) => p.length));
-  while (i < min) {
-    const seg = parts[0][i];
-    if (!parts.every((p) => p[i] === seg)) break;
-    i++;
-  }
-  return "/" + parts[0].slice(0, i).join("/");
 }
 
 async function handleSearch(

@@ -19,6 +19,7 @@ import { promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
+import { findRepoRoot } from "./repo-root.js";
 import type { CodeGraph } from "./types.js";
 
 // "3" introduced CodeGraph._typeInfo (per-file class fields + pending calls)
@@ -79,6 +80,16 @@ function defaultMaxBytesPerRepo(): number {
 /** Deterministic repoKey derived from a working directory — safe across sessions. */
 export function defaultRepoKey(cwd: string = process.cwd()): string {
   return createHash("sha256").update(cwd).digest("hex").slice(0, 16);
+}
+
+/**
+ * repoKey for the repository the analysed files belong to (see
+ * `findRepoRoot`), so per-file entries and named snapshots never leak across
+ * repos. Hashed under its own prefix: buckets written by the cwd-derived
+ * key, which every analysed repo shared, simply miss.
+ */
+export function repoKeyForFiles(paths: string[]): string {
+  return createHash("sha256").update(`repo\0${findRepoRoot(paths)}`).digest("hex").slice(0, 16);
 }
 
 export function resolveCachePaths(opts: CacheOptions = {}): CachePaths {

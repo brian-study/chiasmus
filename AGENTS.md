@@ -240,6 +240,7 @@ Defined by `GRAPH_ANALYSES` in `src/mcp-server.ts` and dispatched by `runAnalysi
 Cache + snapshot workflow:
 
 - `cache=true` enables the SHA256 per-file extraction cache (`~/.cache/chiasmus` or `$CHIASMUS_CACHE_DIR`). Unchanged files skip re-parsing across calls.
+- The cache bucket (`repoKey`) is the analysed repository: the git toplevel above the files' common ancestor, else that ancestor (`repoKeyForFiles` / `findRepoRoot`). Snapshots saved for one repo are invisible to another; buckets from the old cwd-derived key are never read.
 - `save_snapshot="main"` persists the extracted `CodeGraph` under a name; requires `cache=true`.
 - `analysis="diff"` + `against="main"` compares current extraction to that snapshot.
 - Guard: `save_snapshot` and `against` naming the same snapshot is rejected — otherwise the save would clobber the baseline before the diff runs.
