@@ -13,7 +13,7 @@ const FAKE_WORKER = new URL("./fixtures/fake-graph-worker.mjs", import.meta.url)
 let pools: GraphWorkerPool[] = [];
 
 function makePool(opts: GraphWorkerPoolOptions = {}): GraphWorkerPool {
-  const pool = new GraphWorkerPool({ workerUrl: FAKE_WORKER, execArgv: [], ...opts });
+  const pool = new GraphWorkerPool({ workerUrl: FAKE_WORKER, execArgv: [], cancelGraceMs: 300, ...opts });
   pools.push(pool);
   return pool;
 }
@@ -161,6 +161,26 @@ describe("GraphWorkerPool", () => {
     expect((await running).error).toBe("graph worker pool is shut down");
     expect((await queued).error).toBe("graph worker pool is shut down");
     expect((await run(pool, { mode: "ok" })).error).toBe("graph worker pool is shut down");
+  });
+
+  it("retires a busy worker cooperatively, without waiting out the grace period", async () => {
+    const pool = makePool({ cancelGraceMs: 20_000 });
+    const job = run(pool, { mode: "spin-until-cancelled" });
+    await new Promise((r) => setTimeout(r, 100));
+    const t0 = performance.now();
+    await pool.close();
+    expect(performance.now() - t0).toBeLessThan(5_000);
+    expect((await job).error).toBe("graph worker pool is shut down");
+  });
+
+  it("terminates a worker that ignores the cancel request after the grace period", async () => {
+    const pool = makePool({ cancelGraceMs: 200 });
+    const job = run(pool, { mode: "hang" });
+    await new Promise((r) => setTimeout(r, 100));
+    const t0 = performance.now();
+    await pool.close();
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(150);
+    expect((await job).error).toBe("graph worker pool is shut down");
   });
 
   it("reports a worker that cannot start as an error result", async () => {

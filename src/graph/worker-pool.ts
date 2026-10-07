@@ -38,6 +38,18 @@ export interface GraphJobMessage {
   discoverAdapters: boolean;
 }
 
+/** main → worker: end the thread once the current job (if any) has stopped. */
+export interface GraphExitMessage {
+  type: "exit";
+}
+
+export type GraphWorkerMessage = GraphJobMessage | GraphExitMessage;
+
+export interface GraphWorkerData {
+  /** Int32Array flag; non-zero means stop the running job at the next file. */
+  cancel: SharedArrayBuffer;
+}
+
 /** worker → main */
 export interface GraphResultMessage {
   type: "result";
@@ -66,6 +78,8 @@ export interface GraphWorkerPoolOptions {
   maxRssBytes?: number;
   /** V8 limits for the worker isolate; an overrun kills only the worker. */
   resourceLimits?: ResourceLimits;
+  /** How long a busy worker gets to stop cooperatively before terminate(). */
+  cancelGraceMs?: number;
   /** Worker entry point. Defaults to the bundled graph-worker script. */
   workerUrl?: URL;
   /** Node flags for the worker. Defaults to tsx's loader when running from source. */
@@ -79,6 +93,7 @@ const DEFAULTS = {
   idleTimeoutMs: 5 * 60_000,
   maxRssBytes: 2 * 1024 ** 3,
   resourceLimits: { maxOldGenerationSizeMb: 4096 } as ResourceLimits,
+  cancelGraceMs: 3_000,
 };
 
 type RecycleReason = "crash" | "fatal-wasm" | "timeout" | "memory" | "max-jobs" | "idle" | "shutdown";
@@ -88,6 +103,9 @@ interface Slot {
   jobs: number;
   retired: boolean;
   error?: Error;
+  /** Shared with the worker; see GraphWorkerData. */
+  cancel: Int32Array;
+  exited: Promise<void>;
 }
 
 interface Pending {
@@ -139,6 +157,7 @@ export class GraphWorkerPool {
       idleTimeoutMs: options.idleTimeoutMs ?? DEFAULTS.idleTimeoutMs,
       maxRssBytes: options.maxRssBytes ?? DEFAULTS.maxRssBytes,
       resourceLimits: options.resourceLimits ?? DEFAULTS.resourceLimits,
+      cancelGraceMs: options.cancelGraceMs ?? DEFAULTS.cancelGraceMs,
     };
     const entry = options.workerUrl
       ? { url: options.workerUrl }
@@ -200,17 +219,23 @@ export class GraphWorkerPool {
   }
 
   private spawn(): Slot {
+    const cancel = new SharedArrayBuffer(4);
+    const workerData: GraphWorkerData = { cancel };
     const worker = new Worker(this.workerUrl, {
       env: SHARE_ENV,
+      workerData,
       resourceLimits: this.opts.resourceLimits,
       ...(this.execArgv ? { execArgv: this.execArgv } : {}),
     });
-    const slot: Slot = { worker, jobs: 0, retired: false };
+    let markExited!: () => void;
+    const exited = new Promise<void>((resolve) => { markExited = resolve; });
+    const slot: Slot = { worker, jobs: 0, retired: false, cancel: new Int32Array(cancel), exited };
     worker.on("message", (m: GraphResultMessage) => this.onMessage(slot, m));
     // 'error' (uncaught exception, ERR_WORKER_OUT_OF_MEMORY) is followed by 'exit'.
     worker.on("error", (e) => { slot.error ??= e; });
     worker.on("messageerror", (e) => this.onDeath(slot, `${e.name}: ${e.message}`));
     worker.on("exit", (code) => {
+      markExited();
       this.onDeath(slot, slot.error ? `${slot.error.name}: ${slot.error.message}` : `exit code ${code}`);
     });
     worker.unref();
@@ -258,6 +283,14 @@ export class GraphWorkerPool {
     this.pump();
   }
 
+  /**
+   * Stop a worker. worker.terminate() (and process.exit()) while the thread
+   * is inside native tree-sitter aborts the whole process — node-addon-api's
+   * Napi::Error escapes during teardown — so ask first: the cancel flag stops
+   * a running job at the next file, then the queued `exit` message ends the
+   * thread from JS. terminate() only after the grace period, by which point
+   * the thread is almost certainly in JS or WASM, where it is safe.
+   */
   private async retire(slot: Slot, reason: RecycleReason, detail?: string): Promise<void> {
     if (slot.retired) return;
     slot.retired = true;
@@ -265,7 +298,19 @@ export class GraphWorkerPool {
     if (reason !== "idle" && reason !== "shutdown" && reason !== "max-jobs") {
       console.error(`[Chiasmus] graph worker recycled (${reason}${detail ? `: ${detail}` : ""})`);
     }
-    await slot.worker.terminate();
+    if (reason === "crash") {
+      await slot.worker.terminate();
+      return;
+    }
+    Atomics.store(slot.cancel, 0, 1);
+    slot.worker.postMessage({ type: "exit" } satisfies GraphExitMessage);
+    let grace: NodeJS.Timeout | undefined;
+    const stopped = await Promise.race([
+      slot.exited.then(() => true),
+      new Promise<boolean>((resolve) => { grace = setTimeout(() => resolve(false), this.opts.cancelGraceMs); }),
+    ]);
+    clearTimeout(grace);
+    if (!stopped) await slot.worker.terminate();
   }
 
   private armIdleTimer(): void {

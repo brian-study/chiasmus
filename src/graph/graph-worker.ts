@@ -5,17 +5,26 @@
  * pool can decide whether to reuse the thread.
  */
 
-import { parentPort } from "node:worker_threads";
+import { parentPort, workerData } from "node:worker_threads";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { discoverAdapters } from "./adapter-registry.js";
+import { setExtractionCheckpoint } from "./extractor.js";
 import { wasmFailure } from "./parser.js";
 import { handleGraph, handleMap } from "./tool-handlers.js";
-import type { GraphJobMessage, GraphResultMessage } from "./worker-pool.js";
+import type { GraphResultMessage, GraphWorkerData, GraphWorkerMessage } from "./worker-pool.js";
 
 if (!parentPort) throw new Error("graph-worker must run as a worker thread");
 const port = parentPort;
 
-port.on("message", async (msg: GraphJobMessage) => {
+// Set by the pool when it retires this worker mid-job: the running job stops
+// at the next file and the queued `exit` message then ends the thread from JS.
+const cancelled = new Int32Array((workerData as GraphWorkerData).cancel);
+setExtractionCheckpoint(() => {
+  if (Atomics.load(cancelled, 0) !== 0) throw new Error("graph job cancelled: the graph worker is being retired");
+});
+
+port.on("message", async (msg: GraphWorkerMessage) => {
+  if (msg?.type === "exit") process.exit(0);
   if (msg?.type !== "job") return;
   let result: CallToolResult;
   try {

@@ -194,6 +194,19 @@ export async function extractGraph(
   return merged;
 }
 
+/** Hook run before each file is parsed (see setExtractionCheckpoint). */
+let extractionCheckpoint: (() => void) | null = null;
+
+/**
+ * Install a hook that runs before each file is parsed and may throw to
+ * abandon the extraction. The graph worker uses it to stop a cancelled job
+ * between files: terminating a thread while it is inside native tree-sitter
+ * aborts the whole process (node-addon-api's Napi::Error escapes).
+ */
+export function setExtractionCheckpoint(hook: (() => void) | null): void {
+  extractionCheckpoint = hook;
+}
+
 async function extractFileGraph(file: { path: string; content: string }): Promise<CodeGraph> {
   try {
     return await extractFileGraphUnguarded(file);
@@ -206,6 +219,7 @@ async function extractFileGraph(file: { path: string; content: string }): Promis
 }
 
 async function extractFileGraphUnguarded(file: { path: string; content: string }): Promise<CodeGraph> {
+  extractionCheckpoint?.();
   const defines: DefinesFact[] = [];
   const calls: CallsFact[] = [];
   const imports: ImportsFact[] = [];
