@@ -2,7 +2,9 @@
 
 Backlog for this fork (`brian-study/chiasmus`). Items tagged **[upstream]** are
 fork-agnostic improvements worth a PR to `yogthos/chiasmus` (the contributor
-guide is `AGENTS.md`; PR style is terse Title Case + `## Problem`/`## Fix`/`## Tests`).
+guide is `AGENTS.md`; PR style follows #40: a terse conventional-commit title
+(`fix(scope): ...`), one commit per logical change, and a `## Problem`/`## Fix`/`## Tests`
+body; #40 named the last section `## Verification`).
 
 Context: this fork carries the lab harness's chiasmus-verification lane work — see
 `harness-plugin/docs/plans/2026-06-08-chiasmus-verification-lane.md`.
@@ -41,6 +43,51 @@ git fetch upstream
 git switch main
 git merge --no-edit upstream/main
 ```
+
+## Pending upstream PRs: server hang hardening (2026-10-07)
+
+The daemon hang hardening (`fix/daemon-hang-hardening`) is split into four
+**[upstream]** branches cut from `upstream/main` `55d4388` and worded without fork
+references, plus a fork-only remainder. `main` gets them through
+`integration/daemon-hardening` (the four merged in the order below) and then
+`fork/http-daemon-hardening`. Replace each `#TBD` with the PR number once filed:
+
+- **[upstream] Z3 context leak, PR #TBD, PENDING** → `fix/z3-solve-context-leak`.
+  Each solve deletes its own Z3 context; one leaked ~8.7 MB per verify call
+  until the fixed 2 GiB WASM heap ran out after ~240 calls and Emscripten aborted.
+- **[upstream] Exit after a solver WASM abort, PR #TBD, PENDING** →
+  `fix/solver-wasm-abort-exit`, stacked on the context-leak branch. The solvers
+  stop calling into a crashed module and the stdio entry exits 1 instead of hanging.
+- **[upstream] Bounded `bridges` betweenness, PR #TBD, PENDING** →
+  `fix/bounded-bridges-betweenness`. Sampled Brandes above 2,000 nodes, flagged
+  `approximate` (37–46 s exact vs 0.41 s sampled on a 12k-node graph). Its
+  README Exports-table row sits next to the one the abort-exit branch changes, so
+  whichever of the two merges second needs a one-line rebase.
+- **[upstream] Graph tools in a worker thread, PR #TBD, PENDING** →
+  `feat/graph-worker-thread`. Two commits: shared web-tree-sitter init plus
+  one-file-at-a-time extraction, then the worker. A design change upstream may
+  decline; the first commit stands alone.
+
+Fork-only, on `fork/http-daemon-hardening`: `chiasmus-http` exits on a fatal
+solver error, stops the graph worker on shutdown and closes a session that never
+started, and both entries exit through `exitAfterStoppingGraphWorkers`. That last
+piece, its own commit (`fix(graph): stop a busy graph worker before a fatal-error
+exit`), is an **[upstream]** follow-up once the abort-exit and worker PRs are both
+merged, since without it the stdio entry dies of SIGABRT when a solver aborts
+during a graph job. It needs a stdio end-to-end case first: a Prolog trap during
+a `chiasmus_map` (the stdio transport caps a message at 10 MiB, too small for the
+Z3 trap).
+
+The fork carries the four branches unchanged, so re-syncing `main` after they
+merge can conflict only where fork-only lines change text from them:
+- `AGENTS.md`: the General and Graph worker bullets.
+- `src/mcp-server.ts`: the worker-pool import and the `exitOnFatalSolverError` call.
+- `src/graph/worker-pool.ts`: the `busy` getter after the constructor, and
+  `exitAfterStoppingGraphWorkers` at the end of the file.
+- `tests/graph/worker-pool.test.ts`: the import block and the
+  `exitAfterStoppingGraphWorkers` describe.
+- `tests/entry-fatal-exit.test.ts`: the imports, the header comment, `Z3_TRAP`,
+  the `startEntry` signature and the HTTP cases.
 
 ## Open
 

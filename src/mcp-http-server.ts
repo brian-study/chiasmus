@@ -5,6 +5,8 @@ import { createServer, type IncomingMessage, type Server as HttpServer } from "n
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createChiasmusServer } from "./mcp-server.js";
+import { exitOnFatalSolverError } from "./solvers/fatal.js";
+import { exitAfterStoppingGraphWorkers, shutdownGraphWorkers } from "./graph/worker-pool.js";
 import type { Server as McpProtocolServer } from "@modelcontextprotocol/sdk/server/index.js";
 import type { SkillLibrary } from "./skills/library.js";
 
@@ -278,6 +280,7 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     for (const sessionId of [...sessions.keys()]) {
       await closeSession(sessionId);
     }
+    await shutdownGraphWorkers();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   };
 
@@ -291,6 +294,10 @@ const isMain = process.argv[1]?.endsWith("mcp-http-server.ts")
   || process.argv[1]?.endsWith("mcp-http-server.js");
 
 if (isMain) {
+  // A solver WASM abort would otherwise leave the daemon hung, not dead, so
+  // its supervisor never restarts it. A busy graph worker is stopped first:
+  // tearing it down inside native code aborts instead of exiting 1.
+  exitOnFatalSolverError(exitAfterStoppingGraphWorkers);
   try {
     const options = parseHttpOptions();
     await startChiasmusHttpServer(options);

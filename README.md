@@ -55,6 +55,8 @@ url = "http://127.0.0.1:3939/mcp"
 
 This avoids spawning a separate `npx chiasmus` stdio process for every client session.
 
+If a solver's WASM module aborts or traps, the daemon logs `fatal <solver> WASM error, exiting so the process is restarted` and exits with code 1 instead of staying up unresponsive. Run it under a supervisor that restarts it, such as a systemd unit with `Restart=on-failure`.
+
 ### Crush
 
 Add to `crush.json`:
