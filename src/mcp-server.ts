@@ -257,7 +257,7 @@ ANALYSES:
   layer-violation calls that skip layers (handlers→db bypassing services)
   communities     Louvain clusters with cohesion scores
   hubs            top-degree nodes
-  bridges         top betweenness — connect otherwise-separate subgraphs
+  bridges         top betweenness — connect otherwise-separate subgraphs (sampled above 2,000 nodes)
   surprises       cross-community + peripheral→hub edges
   diff            current graph vs saved snapshot (needs against)
   entry-points    zero-in-degree exports — seed dead-code

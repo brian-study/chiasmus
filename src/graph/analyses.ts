@@ -3,7 +3,7 @@ import { extractGraph } from "./extractor.js";
 import { graphToProlog } from "./facts.js";
 import { loadSnapshot, saveSnapshot, type CacheOptions } from "./cache.js";
 import { detectCommunities } from "./community.js";
-import { detectHubs, detectBridges, detectSurprisingConnections } from "./insights.js";
+import { detectHubs, analyzeBridges, detectSurprisingConnections, type BetweennessApproximation } from "./insights.js";
 import { graphDiff } from "./diff.js";
 import { detectEntryPoints } from "./entry-points.js";
 import {
@@ -99,6 +99,11 @@ export interface AnalysisRequest {
 export interface AnalysisResult {
   analysis: AnalysisType;
   result: unknown;
+  /**
+   * Set by `bridges` on graphs too large for exact betweenness: the scores
+   * are a deterministic sampled estimate, not exact values.
+   */
+  approximate?: BetweennessApproximation;
   /** Non-fatal issues encountered while loading source files (missing, unreadable, oversized). */
   warnings?: string[];
 }
@@ -248,8 +253,12 @@ async function runOnGraph(
     case "hubs":
       return { analysis: "hubs", result: detectHubs(graph) };
 
-    case "bridges":
-      return { analysis: "bridges", result: detectBridges(graph) };
+    case "bridges": {
+      const { bridges, approximate } = analyzeBridges(graph);
+      return approximate
+        ? { analysis: "bridges", result: bridges, approximate }
+        : { analysis: "bridges", result: bridges };
+    }
 
     case "surprises":
       return { analysis: "surprises", result: detectSurprisingConnections(graph) };
