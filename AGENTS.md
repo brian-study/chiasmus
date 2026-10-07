@@ -67,6 +67,10 @@ src/
 │   ├── diff.ts            # graphDiff — set diff on nodes + (src,tgt) edge keys
 │   ├── entry-points.ts    # Heuristic entry-point detection (zero-in-degree exports)
 │   ├── cache.ts           # SHA256 per-file cache + LRU eviction + named snapshots (proper-lockfile)
+│   ├── repo-root.ts       # commonPathAncestor + findRepoRoot (git toplevel) — keys the cache per repo
+│   ├── tool-handlers.ts   # chiasmus_graph / chiasmus_map handlers (run inside the graph worker)
+│   ├── worker-pool.ts     # GraphWorkerPool — persistent worker thread, bounded queue, recycling
+│   ├── graph-worker.ts    # Worker-thread entry: runs one tool job, reports fatal-WASM + memory
 │   ├── mermaid.ts         # parseMermaid — Mermaid flowcharts/state diagrams → Prolog facts
 │   ├── type-env.ts        # TS/JS three-tier type inference + class field/method extraction
 │   ├── resolve-calls.ts   # Project-wide QN resolution: inheritance-aware field/method registry
@@ -345,6 +349,12 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 - Test imports use `../src/solvers/z3-solver.js` (not `../../dist/...`)
 - Template slots use `{{SLOT:name}}` markers in skeleton strings
 - Lint tool (`formalize/validate.ts`) auto-fixes markdown fences, `(check-sat)`, `(get-model)`, `(set-logic)` before reporting errors
+
+### Graph worker
+- `chiasmus_graph` and `chiasmus_map` run in a `node:worker_threads` worker (`runGraphTool` → `GraphWorkerPool`), so tree-sitter extraction and graph analyses never block the MCP request thread (`/healthz`, `initialize`, other sessions). One process-wide worker, shared by every session, fed by a FIFO queue capped at 32 waiting jobs (beyond that a job gets `{"error":"graph worker queue is full ..."}` immediately).
+- The worker persists between jobs (grammars stay loaded) and is replaced before the next job when it crashes or exits (including a `resourceLimits` overrun: 4 GiB old-gen by default, `CHIASMUS_GRAPH_WORKER_HEAP_MB`), reports a fatal WASM error (`isFatalWasmError` — web-tree-sitter state is undefined after a trap), runs past the job timeout (10 min, `CHIASMUS_GRAPH_JOB_TIMEOUT_MS`), reports heapUsed + arrayBuffers over 1.5 GiB, serves 100 jobs, or idles for 5 min. A lost job comes back as `{"error":"graph worker crashed while running <tool>: ..."}`.
+- Worker env is `SHARE_ENV` (live `CHIASMUS_CACHE_DIR` etc.). Adapter discovery runs in the worker per job when `config.adapterDiscovery` is set; adapters registered programmatically with `registerAdapter()` in the main thread are not visible to it — set `CHIASMUS_GRAPH_WORKER=off` to run inline.
+- From `dist/` the worker is `dist/graph/graph-worker.js`; from source (tsx, vitest) it is the `.ts` file run with `--import tsx`. Shutdown (`setupShutdownHandlers`, the HTTP server's SIGINT/SIGTERM) terminates it via `shutdownGraphWorkers()`.
 
 ### Graph cache
 - `saveFileCache` serializes all manifest read-modify-writes through `proper-lockfile` on `<repoDir>/.lock` — concurrent MCP dispatches don't tear the manifest

@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createChiasmusServer } from "../../src/mcp-server.js";
 import { defaultRepoKey } from "../../src/graph/cache.js";
 import { MockLLMAdapter } from "../../src/llm/mock.js";
+import { shutdownGraphWorkers } from "../../src/graph/worker-pool.js";
 import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -64,6 +65,7 @@ describe("graph cache keyed by analysed repo (MCP)", () => {
       await client.close();
       await server.close();
       library.close();
+      await shutdownGraphWorkers();
     };
   });
 
