@@ -11,6 +11,7 @@ function reply(id, payload, extra = {}) {
     id,
     result: { content: [{ type: "text", text: JSON.stringify({ threadId, jobs, ...payload }) }] },
     rssBytes: 0,
+    startRssBytes: 0,
     ...extra,
   });
 }
@@ -21,7 +22,7 @@ parentPort.on("message", async (msg) => {
   if (msg.type === "exit") process.exit(0);
   if (msg.type !== "job") return;
   jobs++;
-  const { mode = "ok", ms = 0, bytes = 0, name } = msg.args;
+  const { mode = "ok", ms = 0, bytes = 0, startBytes = 0, name } = msg.args;
   const startedAt = Date.now();
   switch (mode) {
     case "ok":
@@ -42,7 +43,7 @@ parentPort.on("message", async (msg) => {
     case "fatal":
       return reply(msg.id, { error: "memory access out of bounds" }, { fatal: "memory access out of bounds" });
     case "memory":
-      return reply(msg.id, { mode }, { rssBytes: bytes });
+      return reply(msg.id, { mode }, { rssBytes: bytes, startRssBytes: startBytes });
     case "spin-until-cancelled":
       // Synchronous work that only stops when the pool raises the cancel flag.
       while (Atomics.load(cancelled, 0) === 0) {

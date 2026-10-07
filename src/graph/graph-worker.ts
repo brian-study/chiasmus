@@ -1,8 +1,8 @@
 /**
  * Worker-thread entry for chiasmus_graph / chiasmus_map (see worker-pool.ts).
  * Runs one job at a time and reports, with each result, whether the job left
- * this thread's web-tree-sitter in a fatal state and the process RSS, so the
- * pool can decide whether to reuse the thread.
+ * this thread's web-tree-sitter in a fatal state and the process RSS (now and
+ * when this thread started), so the pool can decide whether to reuse it.
  */
 
 import { parentPort, workerData } from "node:worker_threads";
@@ -15,6 +15,7 @@ import type { GraphResultMessage, GraphWorkerData, GraphWorkerMessage } from "./
 
 if (!parentPort) throw new Error("graph-worker must run as a worker thread");
 const port = parentPort;
+const startRssBytes = process.memoryUsage.rss();
 
 // Set by the pool when it retires this worker mid-job: the running job stops
 // at the next file and the queued `exit` message then ends the thread from JS.
@@ -41,6 +42,7 @@ port.on("message", async (msg: GraphWorkerMessage) => {
     result,
     fatal: wasmFailure() ?? undefined,
     rssBytes: process.memoryUsage.rss(),
+    startRssBytes,
   };
   port.postMessage(reply);
 });

@@ -97,11 +97,23 @@ describe("GraphWorkerPool", () => {
     expect(c.jobs).toBe(1);
   });
 
-  it("recycles the worker when the RSS it reports exceeds the cap", async () => {
-    const pool = makePool({ maxRssBytes: 1_000 });
+  it("recycles the worker when the RSS growth it reports exceeds the cap", async () => {
+    const pool = makePool({ maxRssGrowthBytes: 1_000 });
     const big = await run(pool, { mode: "memory", bytes: 5_000 });
     const next = await run(pool, { mode: "ok" });
     expect(next.threadId).not.toBe(big.threadId);
+  });
+
+  it("judges memory by RSS growth since the worker started, not absolute process RSS", async () => {
+    // Memory a retired worker freed often stays in the process (allocator
+    // arenas). Judged on absolute RSS, every later job — tiny ones included —
+    // would replace the fresh worker again, until the daemon restarts.
+    const pool = makePool({ maxRssGrowthBytes: 1_000 });
+    const big = await run(pool, { mode: "memory", startBytes: 0, bytes: 5_000 });
+    const small = await run(pool, { mode: "memory", startBytes: 5_000, bytes: 5_200 });
+    const next = await run(pool, { mode: "ok" });
+    expect(small.threadId).not.toBe(big.threadId);
+    expect(next.threadId).toBe(small.threadId);
   });
 
   it("turns a resourceLimits overrun into an error result and a fresh worker", async () => {
