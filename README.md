@@ -141,7 +141,7 @@ chiasmus_graph files=["main.go", "handler.go"] analysis="impact" target="Query"
 
 Analyses: `summary`, `callers`, `callees`, `reachability`, `dead-code`, `cycles`, `path`, `impact`, `layer-violation`, `communities`, `hubs`, `bridges`, `surprises`, `diff`, `entry-points`, `facts`.
 
-Reachability-heavy analyses (`cycles`, `reachability`, `path`, `impact`, `dead-code`, `callers`, `callees`) run on native O(V+E) graph algorithms and scale to codebases with thousands of functions. `communities` uses Louvain; `bridges` uses exact betweenness centrality. The `facts` analysis emits raw Prolog for use with `chiasmus_verify`, capped at 10 MB — above that limit the result is `{ error, size, limit }` rather than a program string, so narrow the file set or call a specific analysis directly. Opt in to `include_insights=true` on `facts` to also emit `community/2`, `cohesion/2`, `hub/2`, `bridge/2` predicates.
+Reachability-heavy analyses (`cycles`, `reachability`, `path`, `impact`, `dead-code`, `callers`, `callees`) run on native O(V+E) graph algorithms and scale to codebases with thousands of functions. `communities` uses Louvain; `bridges` uses exact betweenness centrality up to 2,000 nodes and a deterministic sampled estimate above that, flagged by an `approximate` field on the result. The `facts` analysis emits raw Prolog for use with `chiasmus_verify`, capped at 10 MB — above that limit the result is `{ error, size, limit }` rather than a program string, so narrow the file set or call a specific analysis directly. Opt in to `include_insights=true` on `facts` to also emit `community/2`, `cohesion/2`, `hub/2`, `bridge/2` predicates.
 
 TS/JS calls also carry qualified-name hints when the receiver's class can be inferred (`CallsFact.calleeQN = "Class.method"`), and imports are resolved through `tsconfig.json` path aliases and the batch's file layout (`ImportsFact.resolved = "<repo-relative path>"`). Both surface as additive Prolog facts — `calls_qn/3` and `imports_resolved/3` — so back-compat queries over `calls/2` and `imports/3` keep working.
 
@@ -480,7 +480,7 @@ library.close();
 |---------|---------|
 | `chiasmus` | All public APIs (barrel export) |
 | `chiasmus/solvers` | `SolverSession`, `createZ3Solver`, `createPrologSolver`, `correctionLoop`, `setFatalSolverErrorHandler`, `exitOnFatalSolverError`, `isFatalWasmError`, solver types |
-| `chiasmus/graph` | `extractGraph`, `runAnalysis`, `runAnalysisFromGraph`, `buildFactsResult`, `graphToProlog`, `parseMermaid`, `detectCommunities`, `detectHubs`, `detectBridges`, `detectSurprisingConnections`, `detectEntryPoints`, `graphDiff`, `saveSnapshot`/`loadSnapshot`/`listSnapshots`, cache APIs, adapter registry, graph types |
+| `chiasmus/graph` | `extractGraph`, `runAnalysis`, `runAnalysisFromGraph`, `buildFactsResult`, `graphToProlog`, `parseMermaid`, `detectCommunities`, `detectHubs`, `detectBridges`, `analyzeBridges`, `detectSurprisingConnections`, `detectEntryPoints`, `graphDiff`, `saveSnapshot`/`loadSnapshot`/`listSnapshots`, cache APIs, adapter registry, graph types |
 | `chiasmus/formalize` | `lintSpec`, `classifyFeedback`, `extractPrologQuery`, `FormalizationEngine`, result types |
 | `chiasmus/skills` | `SkillLibrary`, `SkillLearner`, `craftTemplate`, `validateTemplate`, skill types |
 | `chiasmus/llm` | `createLLMFromEnv`, `createEmbeddingFromEnv`, `AnthropicAdapter`, `OpenAICompatibleAdapter`, `OpenAICompatibleEmbeddingAdapter`, `LocalEmbeddingAdapter`, `resolveLocalEmbeddingConfig`, LLM types |

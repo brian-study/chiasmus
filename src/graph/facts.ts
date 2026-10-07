@@ -1,6 +1,6 @@
 import type { CodeGraph } from "./types.js";
 import { detectCommunities } from "./community.js";
-import { detectHubs, detectBridges } from "./insights.js";
+import { detectHubs, analyzeBridges } from "./insights.js";
 
 /** Escape a string for use as a Prolog atom (single-quoted if needed) */
 export function escapeAtom(s: string): string {
@@ -203,7 +203,13 @@ export function graphToProlog(
     }
     if (hubs.length > 0) lines.push("");
 
-    const bridges = detectBridges(graph);
+    const { bridges, approximate } = analyzeBridges(graph);
+    if (approximate && bridges.length > 0) {
+      lines.push(
+        `% bridge/2 scores are approximate: sampled betweenness from ${approximate.pivots} of ` +
+          `${approximate.nodes} nodes as BFS sources (seed ${approximate.seed}).`,
+      );
+    }
     for (const b of bridges) {
       lines.push(`bridge(${escapeAtom(b.name)}, ${b.score.toFixed(4)}).`);
     }
