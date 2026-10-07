@@ -25,11 +25,18 @@ const WasmRuntimeError = (
   globalThis as unknown as { WebAssembly: { RuntimeError: ErrorConstructor } }
 ).WebAssembly.RuntimeError;
 
-/** True for an Emscripten abort or a WASM trap. */
+/**
+ * True for an Emscripten abort or a WASM trap: both throw a
+ * WebAssembly.RuntimeError. The message is never consulted, because solver
+ * errors quote user input — a function named `|Aborted(|` is not a crash.
+ */
 export function isFatalWasmError(e: unknown): boolean {
-  if (e instanceof WasmRuntimeError) return true;
-  const message = e instanceof Error ? e.message : String(e);
-  return message.includes("Aborted(");
+  return e instanceof WasmRuntimeError;
+}
+
+/** The error a module's onAbort hook records: what Emscripten's abort() throws. */
+export function abortError(what: unknown): Error {
+  return new WasmRuntimeError(`Aborted(${String(what)})`);
 }
 
 /** Keeps a catch block from turning a fatal WASM error into a solver result. */

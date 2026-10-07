@@ -1,5 +1,5 @@
 import { initProlog, type PrologFull } from "prolog-wasm-full";
-import { isFatalWasmError, reportFatalSolverError, rethrowIfFatal } from "./fatal.js";
+import { abortError, isFatalWasmError, reportFatalSolverError, rethrowIfFatal } from "./fatal.js";
 import type {
   PrologAnswer,
   PrologBatchInput,
@@ -61,7 +61,7 @@ async function getPl(): Promise<PrologFull> {
     const pl = await initProlog();
     // Emscripten calls this before unwinding an abort.
     Object.assign(pl.em, {
-      onAbort: (what: unknown) => markFatal(new Error(`Aborted(${String(what)})`)),
+      onAbort: (what: unknown) => markFatal(abortError(what)),
     });
     // The message-capture predicate and hook must be module-qualified to
     // `user:`. SWI invokes message_hook from whichever module is emitting

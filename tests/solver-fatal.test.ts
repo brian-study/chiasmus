@@ -135,12 +135,15 @@ afterEach(() => {
 
 describe("isFatalWasmError", () => {
   it("recognises Emscripten aborts and WASM traps only", async () => {
-    const { isFatalWasmError } = await import("../src/solvers/fatal.js");
+    const { abortError, isFatalWasmError } = await import("../src/solvers/fatal.js");
 
     expect(isFatalWasmError(new WebAssembly.RuntimeError("memory access out of bounds"))).toBe(true);
     expect(isFatalWasmError(new WebAssembly.RuntimeError("unreachable"))).toBe(true);
-    expect(isFatalWasmError(new Error(`Aborted(${OOM})`))).toBe(true);
-    expect(isFatalWasmError(`Aborted(${OOM})`)).toBe(true);
+    expect(isFatalWasmError(new WebAssembly.RuntimeError(`Aborted(${OOM})`))).toBe(true);
+    // Solver messages echo user input, so the text alone proves nothing.
+    expect(isFatalWasmError(new Error(`Aborted(${OOM})`))).toBe(false);
+    expect(isFatalWasmError(`Aborted(${OOM})`)).toBe(false);
+    expect(isFatalWasmError(abortError(OOM))).toBe(true);
     expect(isFatalWasmError(new Error("(error \"line 1 column 5: Sort mismatch\")"))).toBe(false);
     expect(isFatalWasmError(new Error("canceled"))).toBe(false);
     expect(isFatalWasmError(undefined)).toBe(false);

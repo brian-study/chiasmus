@@ -9,7 +9,7 @@ import {
   type Z3_model,
   type Z3_solver,
 } from "z3-solver";
-import { isFatalWasmError, reportFatalSolverError, rethrowIfFatal } from "./fatal.js";
+import { abortError, isFatalWasmError, reportFatalSolverError, rethrowIfFatal } from "./fatal.js";
 import type { Solver, SolverInput, SolverResult } from "./types.js";
 
 type Z3Core = Awaited<ReturnType<typeof init>>["Z3"];
@@ -46,7 +46,7 @@ function getZ3() {
     z3Promise = init({
       // Emscripten calls this before unwinding an abort, from the main thread
       // or proxied from a pthread, so the process can still exit cleanly.
-      onAbort: (what: unknown) => markFatal(new Error(`Aborted(${String(what)})`)),
+      onAbort: (what: unknown) => markFatal(abortError(what)),
     });
   }
   return z3Promise;

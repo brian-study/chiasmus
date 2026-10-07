@@ -338,7 +338,7 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 - Prolog clauses must end with periods
 
 ### General
-- An Emscripten abort or WASM trap (`isFatalWasmError` in `solvers/fatal.ts`) leaves a solver module unusable: the next call into it can block the event loop forever. Z3 and Prolog stop calling into the module, report the error through `reportFatalSolverError`, and answer later solves with an error. Both CLI entries call `exitOnFatalSolverError()` (log + `process.exit(1)`) so systemd restarts the daemon; library users get no exit. New catch blocks around solver calls must start with `rethrowIfFatal(e)`
+- An Emscripten abort or WASM trap (`isFatalWasmError` in `solvers/fatal.ts`; both throw `WebAssembly.RuntimeError`, never match on message text — solver errors quote user input) leaves a solver module unusable: the next call into it can block the event loop forever. Z3 and Prolog stop calling into the module, report the error through `reportFatalSolverError`, and answer later solves with an error. Both CLI entries call `exitOnFatalSolverError()` (log + `process.exit(1)`) so systemd restarts the daemon; library users get no exit. New catch blocks around solver calls must start with `rethrowIfFatal(e)`
 - `SolverSession.create()` is async (Z3 init) — always `await` it
 - `SkillLibrary.create()` is async (SQLite init) — always `await` it
 - Correction loop delegates to `repl-sandbox` package's generic `correctionLoop`
