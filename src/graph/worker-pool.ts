@@ -205,6 +205,14 @@ export class GraphWorkerPool {
     this.execArgv = options.execArgv ?? (options.workerUrl ? undefined : entry.execArgv);
   }
 
+  /**
+   * A job is running on a worker, or a retired worker is still stopping:
+   * either may be inside native tree-sitter, where process.exit() aborts.
+   */
+  get busy(): boolean {
+    return this.active !== null || this.stopping.size > 0;
+  }
+
   /** Queue a job. Never rejects: failures come back as `{ error }` tool results. */
   run(job: GraphJob): Promise<CallToolResult> {
     if (this.closed) return Promise.resolve(errorResult("graph worker pool is shut down"));
@@ -480,4 +488,35 @@ export function runGraphTool(job: GraphJob): Promise<CallToolResult> {
  */
 export async function shutdownGraphWorkers(): Promise<void> {
   await getGraphWorkerPool().close();
+}
+
+/**
+ * Exit the process from an emergency path (a fatal solver WASM error) without
+ * tearing down a graph worker that is inside native tree-sitter, which aborts
+ * the process (exit 134 and a core dump) instead of exiting with `code`. With
+ * no job running the exit is immediate, as it was; a busy pool is closed
+ * first — cooperatively, so usually within milliseconds — and `deadlineMs`
+ * caps the wait should the worker not stop.
+ */
+export function exitAfterStoppingGraphWorkers(
+  code: number,
+  opts: { exit?: (code: number) => void; pool?: GraphWorkerPool; deadlineMs?: number } = {},
+): void {
+  const exit = opts.exit ?? ((c: number) => process.exit(c));
+  const pool = opts.pool ?? shared;
+  if (!pool?.busy) {
+    exit(code);
+    return;
+  }
+  let exited = false;
+  const exitOnce = (): void => {
+    if (exited) return;
+    exited = true;
+    exit(code);
+  };
+  const deadline = setTimeout(exitOnce, opts.deadlineMs ?? DEFAULTS.cancelGraceMs + 2_000);
+  void pool.close().catch(() => undefined).then(() => {
+    clearTimeout(deadline);
+    exitOnce();
+  });
 }
