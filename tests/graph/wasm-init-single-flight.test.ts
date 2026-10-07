@@ -6,7 +6,8 @@ import { parseSourceAsync } from "../../src/graph/parser.js";
  * batch at once; concurrent graph calls on one thread still do) each ran
  * web-tree-sitter's Parser.init() and Language.load() themselves: one
  * runtime instance and one grammar instance per file, and grammars bound
- * to whichever runtime instance they loaded into. Init and grammar loads
+ * to whichever runtime instance they loaded into. The graph worker makes
+ * cold threads the common case (every recycle), so init and grammar loads
  * must be shared by concurrent callers.
  *
  * This file must stay the only WASM user in its test process: the counts

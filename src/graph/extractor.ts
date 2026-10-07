@@ -1,4 +1,4 @@
-import { parseSource, parseSourceAsync, getLanguageForFile } from "./parser.js";
+import { parseSource, parseSourceAsync, getLanguageForFile, noteWasmError } from "./parser.js";
 import { walkScheme, walkCommonLisp, resolveCommonLispPackageCalls } from "./extract-sexp.js";
 import { getAdapter } from "./adapter-registry.js";
 import { checkFileCache, saveFileCache, type CacheOptions } from "./cache.js";
@@ -200,7 +200,34 @@ export async function extractGraph(
   return merged;
 }
 
+/** Hook run before each file is parsed and walked (see setExtractionCheckpoint). */
+let extractionCheckpoint: (() => void) | null = null;
+
+/**
+ * Install a hook that runs before each file is parsed and before its tree is
+ * walked, and may throw to abandon the extraction. The graph worker uses it
+ * to stop a cancelled job between files: terminating a thread while it is
+ * inside native tree-sitter aborts the whole process (node-addon-api's
+ * Napi::Error escapes). WASM-grammar files only parse after an await (the
+ * grammar load), so the hook runs again right before that parse.
+ */
+export function setExtractionCheckpoint(hook: (() => void) | null): void {
+  extractionCheckpoint = hook;
+}
+
 async function extractFileGraph(file: { path: string; content: string }): Promise<CodeGraph> {
+  try {
+    return await extractFileGraphUnguarded(file);
+  } catch (e) {
+    // A WASM trap here poisons this thread's parser; the graph worker reads
+    // the flag after the job and retires the thread.
+    noteWasmError(e);
+    throw e;
+  }
+}
+
+async function extractFileGraphUnguarded(file: { path: string; content: string }): Promise<CodeGraph> {
+  extractionCheckpoint?.();
   const defines: DefinesFact[] = [];
   const calls: CallsFact[] = [];
   const imports: ImportsFact[] = [];
@@ -221,11 +248,12 @@ async function extractFileGraph(file: { path: string; content: string }): Promis
   files.push(fileNode);
 
   const tree = parseSource(file.content, file.path)
-    ?? await parseSourceAsync(file.content, file.path);
+    ?? await parseSourceAsync(file.content, file.path, () => extractionCheckpoint?.());
   if (!tree) return { defines, calls, imports, exports, contains, files };
 
   let typeInfo: FileTypeInfo | undefined;
   try {
+    extractionCheckpoint?.();
     const doc = extractFileDoc(tree.rootNode, lang);
     if (doc) fileNode.fileDoc = doc;
     extractFromTree(tree, file.path, lang, defines, calls, imports, exports, contains, callSet, fileNode);

@@ -474,6 +474,9 @@ library.close();
 | `CHIASMUS_HOME` | `~/.chiasmus/` | Database, skill storage, and config |
 | `CHIASMUS_CACHE_DIR` | `~/.cache/chiasmus` | Per-file extraction cache + graph snapshots (when `cache=true`) |
 | `CHIASMUS_CACHE_MAX_PER_REPO` | `67108864` (64 MB) | Per-repo cache byte budget — LRU eviction above this |
+| `CHIASMUS_GRAPH_WORKER` | on | `0`/`off`/`false` runs `chiasmus_graph` and `chiasmus_map` on the request thread instead of the graph worker thread |
+| `CHIASMUS_GRAPH_WORKER_HEAP_MB` | `4096` | Graph worker old-generation heap limit; an overrun fails the job and replaces the worker instead of crashing the server |
+| `CHIASMUS_GRAPH_JOB_TIMEOUT_MS` | `600000` (10 min) | A graph job running longer is aborted and the graph worker replaced |
 | `ANTHROPIC_API_KEY` | — | Optional: Anthropic provider for autonomous mode |
 | `DEEPSEEK_API_KEY` | — | Optional: DeepSeek provider for autonomous mode |
 | `OPENAI_API_KEY` | — | Optional: OpenAI provider for autonomous mode |
