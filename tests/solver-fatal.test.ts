@@ -87,10 +87,15 @@ vi.mock("prolog-wasm-full", () => {
   });
   return {
     initProlog: async () => {
-      pl.em = { FS: { writeFile: () => undefined, unlink: () => undefined } } as typeof pl.em;
+      pl.em = {
+        FS: {
+          writeFile: () => void pl.calls.push("writeFile"),
+          unlink: () => void pl.calls.push("unlink"),
+        },
+      } as typeof pl.em;
       return {
         em: pl.em,
-        consult: () => undefined,
+        consult: () => void pl.calls.push("consult"),
         stock: {
           call: (goal: string) => {
             pl.calls.push(`call:${goal}`);
@@ -296,6 +301,25 @@ describe("Prolog fatal WASM errors", () => {
       expect(second.status).toBe("error");
       if (second.status === "error") expect(second.error).toMatch(/restart/);
       expect(fake.prolog.calls.length).toBe(callsAfterFailure);
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it(`does not run a solve that waited for the module through ${name}`, async () => {
+      const fatal = await import("../src/solvers/fatal.js");
+      const prolog = await import("../src/solvers/prolog-solver.js");
+      const handler = vi.fn();
+      fatal.setFatalSolverErrorHandler(handler);
+      fake.prolog.failure = failure;
+
+      // Both solves wait for the module; the first one breaks it.
+      const [first, second] = await Promise.all([solveProlog(prolog), solveProlog(prolog)]);
+
+      expect(first.status).toBe("error");
+      if (first.status === "error") expect(first.error).not.toMatch(/restart/);
+      expect(second.status).toBe("error");
+      if (second.status === "error") expect(second.error).toMatch(/restart/);
+      expect(fake.prolog.calls.at(-1)).toContain("call_with_inference_limit");
+      expect(fake.prolog.calls.filter((c) => c === "writeFile")).toHaveLength(1);
       expect(handler).toHaveBeenCalledOnce();
     });
   }

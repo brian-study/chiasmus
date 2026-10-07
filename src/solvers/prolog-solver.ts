@@ -52,6 +52,13 @@ function markFatal(e: unknown): void {
   reportFatalSolverError("prolog", fatalError);
 }
 
+function unavailable(error: Error): SolverResult {
+  return {
+    status: "error",
+    error: `Prolog is unavailable after a fatal WASM error (${error.message}); restart the process`,
+  };
+}
+
 function uniqueSessionModule(): string {
   return `chiasmus_session_${++sessionCounter}`;
 }
@@ -586,36 +593,15 @@ function solveSessionQuery(
 export function createPrologSolver(): Solver {
   let disposed = false;
 
-  const solveProgram = async (
+  // Synchronous from start to finish, so a fatal error is marked before any
+  // other solve resumes from awaiting the module.
+  const solveLoaded = (
+    pl: PrologFull,
     userProgram: string,
     queries: string[],
     explain: boolean,
     inferenceBudget: number,
-  ): Promise<SolverResult[]> => {
-    if (disposed) {
-      return [{ status: "error", error: "Solver has been disposed" }];
-    }
-    if (queries.length === 0) {
-      return [{ status: "error", error: "At least one Prolog query is required" }];
-    }
-
-    if (fatalError) {
-      return [{
-        status: "error",
-        error: `Prolog is unavailable after a fatal WASM error (${fatalError.message}); restart the process`,
-      }];
-    }
-
-    let pl: PrologFull;
-    try {
-      pl = await getPl();
-    } catch (e) {
-      return [{
-        status: "error",
-        error: `prolog init failed: ${e instanceof Error ? e.message : String(e)}`,
-      }];
-    }
-
+  ): SolverResult[] => {
     const moduleId = uniqueSessionModule();
     const path = uniqueTempPath();
     if (!SAFE_PATH_RE.test(path)) {
@@ -692,11 +678,34 @@ export function createPrologSolver(): Solver {
     return finalize(results);
   };
 
-  const solveUnlessFatal = async (
-    ...args: Parameters<typeof solveProgram>
+  const solveProgram = async (
+    userProgram: string,
+    queries: string[],
+    explain: boolean,
+    inferenceBudget: number,
   ): Promise<SolverResult[]> => {
+    if (disposed) {
+      return [{ status: "error", error: "Solver has been disposed" }];
+    }
+    if (queries.length === 0) {
+      return [{ status: "error", error: "At least one Prolog query is required" }];
+    }
+    if (fatalError) return [unavailable(fatalError)];
+
+    let pl: PrologFull;
     try {
-      return await solveProgram(...args);
+      pl = await getPl();
+    } catch (e) {
+      return [{
+        status: "error",
+        error: `prolog init failed: ${e instanceof Error ? e.message : String(e)}`,
+      }];
+    }
+    // Another solve may have broken the module while this one waited.
+    if (fatalError) return [unavailable(fatalError)];
+
+    try {
+      return solveLoaded(pl, userProgram, queries, explain, inferenceBudget);
     } catch (e) {
       if (!isFatalWasmError(e)) throw e;
       markFatal(e);
@@ -711,7 +720,7 @@ export function createPrologSolver(): Solver {
       if (input.type !== "prolog") {
         return { status: "error", error: "Expected prolog input type" };
       }
-      const results = await solveUnlessFatal(
+      const results = await solveProgram(
         input.program,
         [input.query],
         input.explain ?? false,
@@ -727,7 +736,7 @@ export function createPrologSolver(): Solver {
       if (!Array.isArray(input.queries) || input.queries.some((q) => typeof q !== "string")) {
         return [{ status: "error", error: "queries array must contain only strings" }];
       }
-      return solveUnlessFatal(
+      return solveProgram(
         input.program,
         input.queries,
         input.explain ?? false,
