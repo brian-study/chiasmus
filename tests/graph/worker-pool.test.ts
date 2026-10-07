@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   GraphWorkerPool,
   runGraphTool,
+  shutdownGraphWorkers,
   workerEntryFor,
   type GraphWorkerPoolOptions,
 } from "../../src/graph/worker-pool.js";
@@ -173,6 +174,18 @@ describe("GraphWorkerPool", () => {
     expect((await job).error).toBe("graph worker pool is shut down");
   });
 
+  it("waits on close for a worker still retiring after a timeout", async () => {
+    const pool = makePool({ jobTimeoutMs: 300, cancelGraceMs: 2_000 });
+    const hung = await run(pool, { mode: "hang" });
+    expect(hung.error).toMatch(/exceeded 300ms/);
+    // The timed-out worker ignores the cancel flag; it only stops when the
+    // grace period ends in terminate(). close() must not return before that,
+    // or a shutdown would exit the process under a running worker.
+    const t0 = performance.now();
+    await pool.close();
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(1_000);
+  });
+
   it("terminates a worker that ignores the cancel request after the grace period", async () => {
     const pool = makePool({ cancelGraceMs: 200 });
     const job = run(pool, { mode: "hang" });
@@ -265,5 +278,15 @@ describe("runGraphTool", () => {
       if (prev === undefined) delete process.env.CHIASMUS_GRAPH_WORKER;
       else process.env.CHIASMUS_GRAPH_WORKER = prev;
     }
+  });
+});
+
+describe("shutdownGraphWorkers", () => {
+  // Runs last in this file: the shared pool stays shut for the process.
+  it("refuses later graph jobs instead of starting a new worker", async () => {
+    await shutdownGraphWorkers();
+    const r = await runGraphTool({ tool: "chiasmus_graph", args: { files: [], analysis: "summary" } });
+    const text = (r.content as Array<{ text: string }>)[0].text;
+    expect(JSON.parse(text).error).toBe("graph worker pool is shut down");
   });
 });

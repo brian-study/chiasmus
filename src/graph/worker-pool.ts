@@ -171,6 +171,8 @@ export class GraphWorkerPool {
   private idleTimer: NodeJS.Timeout | null = null;
   private nextId = 1;
   private closed = false;
+  /** Stops of retired workers still in progress (cooperative exit or terminate()). */
+  private readonly stopping = new Set<Promise<void>>();
 
   constructor(options: GraphWorkerPoolOptions = {}) {
     this.opts = {
@@ -203,7 +205,11 @@ export class GraphWorkerPool {
     });
   }
 
-  /** Fail queued and running jobs, terminate the worker, refuse new jobs. */
+  /**
+   * Fail queued and running jobs, refuse new jobs, and stop every worker —
+   * including one already retiring (e.g. after a timeout) — before resolving,
+   * so a shutdown never exits the process under a running worker.
+   */
   async close(): Promise<void> {
     this.closed = true;
     this.clearIdleTimer();
@@ -212,8 +218,8 @@ export class GraphWorkerPool {
     this.active = null;
     this.queue = [];
     for (const p of pending) p.resolve(errorResult("graph worker pool is shut down"));
-    const slot = this.slot;
-    if (slot) await this.retire(slot, "shutdown");
+    if (this.slot) this.retire(this.slot, "shutdown");
+    await Promise.all(this.stopping);
   }
 
   private pump(): void {
@@ -288,7 +294,7 @@ export class GraphWorkerPool {
     if (m.fatal) reason = "fatal-wasm";
     else if (m.rssBytes > this.opts.maxRssBytes) reason = "memory";
     else if (slot.jobs >= this.opts.maxJobsPerWorker) reason = "max-jobs";
-    if (reason) void this.retire(slot, reason, m.fatal);
+    if (reason) this.retire(slot, reason, m.fatal);
     else slot.worker.unref();
     done.resolve(m.result);
     this.pump();
@@ -297,7 +303,7 @@ export class GraphWorkerPool {
   /** Unplanned loss of a worker (crash, exit, undeliverable result). */
   private onDeath(slot: Slot, detail: string): void {
     if (slot.retired) return;
-    void this.retire(slot, "crash", detail);
+    this.retire(slot, "crash", detail);
     const failed = this.active;
     if (!failed || failed.slot !== slot) return;
     this.clearJobTimer();
@@ -311,11 +317,24 @@ export class GraphWorkerPool {
     if (slot !== this.slot || !timedOut) return;
     this.jobTimer = null;
     this.active = null;
-    void this.retire(slot, "timeout");
+    this.retire(slot, "timeout");
     timedOut.resolve(errorResult(
       `${timedOut.job.tool} exceeded ${this.opts.jobTimeoutMs}ms and was aborted; the graph worker was restarted`,
     ));
     this.pump();
+  }
+
+  /** Take a worker out of service and stop it; close() waits for the stop. */
+  private retire(slot: Slot, reason: RecycleReason, detail?: string): void {
+    if (slot.retired) return;
+    slot.retired = true;
+    if (this.slot === slot) this.slot = null;
+    if (reason !== "idle" && reason !== "shutdown" && reason !== "max-jobs") {
+      console.error(`[Chiasmus] graph worker recycled (${reason}${detail ? `: ${detail}` : ""})`);
+    }
+    const stopping = this.stop(slot, reason === "crash").catch(() => undefined);
+    this.stopping.add(stopping);
+    void stopping.then(() => this.stopping.delete(stopping));
   }
 
   /**
@@ -326,14 +345,8 @@ export class GraphWorkerPool {
    * thread from JS. terminate() only after the grace period, by which point
    * the thread is almost certainly in JS or WASM, where it is safe.
    */
-  private async retire(slot: Slot, reason: RecycleReason, detail?: string): Promise<void> {
-    if (slot.retired) return;
-    slot.retired = true;
-    if (this.slot === slot) this.slot = null;
-    if (reason !== "idle" && reason !== "shutdown" && reason !== "max-jobs") {
-      console.error(`[Chiasmus] graph worker recycled (${reason}${detail ? `: ${detail}` : ""})`);
-    }
-    if (reason === "crash") {
+  private async stop(slot: Slot, immediate: boolean): Promise<void> {
+    if (immediate) {
       await slot.worker.terminate();
       return;
     }
@@ -353,7 +366,7 @@ export class GraphWorkerPool {
     if (!slot || this.idleTimer) return;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
-      if (this.slot === slot && !this.active) void this.retire(slot, "idle");
+      if (this.slot === slot && !this.active) this.retire(slot, "idle");
     }, this.opts.idleTimeoutMs);
     this.idleTimer.unref();
   }
@@ -409,9 +422,11 @@ export function runGraphTool(job: GraphJob): Promise<CallToolResult> {
   return getGraphWorkerPool().run(job);
 }
 
-/** Terminate the shared worker; called on server shutdown. */
+/**
+ * Stop the shared worker and refuse graph jobs from then on; called on
+ * server shutdown. The closed pool stays in place, so a call arriving while
+ * the server drains gets an error instead of spawning a fresh worker.
+ */
 export async function shutdownGraphWorkers(): Promise<void> {
-  const pool = shared;
-  shared = null;
-  await pool?.close();
+  await getGraphWorkerPool().close();
 }
