@@ -18,9 +18,10 @@ afterEach(() => {
 
 /**
  * The graph worker stops a cancelled job through the extraction checkpoint.
- * extractGraph starts every file before any finishes, and WASM-grammar files
- * only parse after an await — so a checkpoint run only on entry fires for
- * every file before the first parse, and a cancel never stops the batch.
+ * WASM-grammar files only parse after an await, and extractGraph used to
+ * start every file before any finished — so a checkpoint run only on entry
+ * fired for every file before the first parse, and a cancel never stopped
+ * the batch. Once the checkpoint throws, no further file may be parsed.
  */
 describe("extraction checkpoint with WASM grammars", () => {
   it("stops the batch at the next parse once the checkpoint throws, freeing parsed trees", async () => {

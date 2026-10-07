@@ -137,9 +137,15 @@ export async function extractGraph(
     toExtract = r.misses;
   }
 
-  const fresh = await Promise.all(
-    toExtract.map(async (file) => ({ path: file.path, content: file.content, graph: await extractFileGraph(file) })),
-  );
+  // One file at a time. Extraction is CPU-bound on this thread either way,
+  // but started all at once, WASM-grammar files (which parse after an
+  // await) were all parsed before the first tree was walked and freed, so
+  // every tree sat in web-tree-sitter's WASM heap together: 2.55 GB peak RSS
+  // for brian's 3,864 .clj files against 0.5 GB this way (and 15 s vs 12 s).
+  const fresh: Array<{ path: string; content: string; graph: CodeGraph }> = [];
+  for (const file of toExtract) {
+    fresh.push({ path: file.path, content: file.content, graph: await extractFileGraph(file) });
+  }
 
   if (opts.cache && fresh.length > 0) {
     await saveFileCache(
@@ -202,9 +208,8 @@ let extractionCheckpoint: (() => void) | null = null;
  * walked, and may throw to abandon the extraction. The graph worker uses it
  * to stop a cancelled job between files: terminating a thread while it is
  * inside native tree-sitter aborts the whole process (node-addon-api's
- * Napi::Error escapes). WASM-grammar files only parse after an await, by
- * which time every file in the batch has passed the entry check, so the
- * hook also runs right before the parse and before the walk.
+ * Napi::Error escapes). WASM-grammar files only parse after an await (the
+ * grammar load), so the hook runs again right before that parse.
  */
 export function setExtractionCheckpoint(hook: (() => void) | null): void {
   extractionCheckpoint = hook;
