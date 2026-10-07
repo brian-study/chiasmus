@@ -19,6 +19,7 @@
 import { Worker, SHARE_ENV, type ResourceLimits } from "node:worker_threads";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { handleGraph, handleMap } from "./tool-handlers.js";
+import { hasCodeRegisteredAdapters } from "./adapter-registry.js";
 
 export type GraphTool = "chiasmus_graph" | "chiasmus_map";
 
@@ -361,9 +362,14 @@ export function getGraphWorkerPool(): GraphWorkerPool {
   return shared;
 }
 
-/** Run a graph tool job off the request thread (or inline when disabled). */
+/**
+ * Run a graph tool job off the request thread — or inline when the worker is
+ * disabled, or when adapters were registered in code on this thread: the
+ * worker has its own registry and cannot load them, so their files would
+ * silently drop out of the result.
+ */
 export function runGraphTool(job: GraphJob): Promise<CallToolResult> {
-  if (workerDisabled()) {
+  if (workerDisabled() || hasCodeRegisteredAdapters()) {
     return job.tool === "chiasmus_map" ? handleMap(job.args) : handleGraph(job.args);
   }
   return getGraphWorkerPool().run(job);
