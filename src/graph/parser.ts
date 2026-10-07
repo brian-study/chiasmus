@@ -260,8 +260,16 @@ function getWasmParserInstance(): any {
   return wasmParserInstance;
 }
 
-/** Async parse — handles both native CJS and WASM grammars. */
-export async function parseSourceAsync(content: string, filePath: string): Promise<any | null> {
+/**
+ * Async parse — handles both native CJS and WASM grammars. `beforeParse`
+ * runs after the language has loaded, right before parsing, and may throw
+ * to abandon the parse.
+ */
+export async function parseSourceAsync(
+  content: string,
+  filePath: string,
+  beforeParse?: () => void,
+): Promise<any | null> {
   const language = getLanguageForFile(filePath);
   if (!language) return null;
 
@@ -270,11 +278,13 @@ export async function parseSourceAsync(content: string, filePath: string): Promi
 
   if (loaded.wasm) {
     await initWasm();
+    beforeParse?.();
     const parser = getWasmParserInstance();
     parser.setLanguage(loaded.lang);
     return parser.parse(content);
   }
 
+  beforeParse?.();
   const parser = getNativeParserInstance();
   parser.setLanguage(loaded.lang);
   return parser.parse(content);

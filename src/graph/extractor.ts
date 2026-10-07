@@ -194,14 +194,17 @@ export async function extractGraph(
   return merged;
 }
 
-/** Hook run before each file is parsed (see setExtractionCheckpoint). */
+/** Hook run before each file is parsed and walked (see setExtractionCheckpoint). */
 let extractionCheckpoint: (() => void) | null = null;
 
 /**
- * Install a hook that runs before each file is parsed and may throw to
- * abandon the extraction. The graph worker uses it to stop a cancelled job
- * between files: terminating a thread while it is inside native tree-sitter
- * aborts the whole process (node-addon-api's Napi::Error escapes).
+ * Install a hook that runs before each file is parsed and before its tree is
+ * walked, and may throw to abandon the extraction. The graph worker uses it
+ * to stop a cancelled job between files: terminating a thread while it is
+ * inside native tree-sitter aborts the whole process (node-addon-api's
+ * Napi::Error escapes). WASM-grammar files only parse after an await, by
+ * which time every file in the batch has passed the entry check, so the
+ * hook also runs right before the parse and before the walk.
  */
 export function setExtractionCheckpoint(hook: (() => void) | null): void {
   extractionCheckpoint = hook;
@@ -240,11 +243,12 @@ async function extractFileGraphUnguarded(file: { path: string; content: string }
   files.push(fileNode);
 
   const tree = parseSource(file.content, file.path)
-    ?? await parseSourceAsync(file.content, file.path);
+    ?? await parseSourceAsync(file.content, file.path, () => extractionCheckpoint?.());
   if (!tree) return { defines, calls, imports, exports, contains, files };
 
   let typeInfo: FileTypeInfo | undefined;
   try {
+    extractionCheckpoint?.();
     const doc = extractFileDoc(tree.rootNode, lang);
     if (doc) fileNode.fileDoc = doc;
     extractFromTree(tree, file.path, lang, defines, calls, imports, exports, contains, callSet, fileNode);
