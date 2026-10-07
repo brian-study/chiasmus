@@ -10,7 +10,7 @@ function reply(id, payload, extra = {}) {
     type: "result",
     id,
     result: { content: [{ type: "text", text: JSON.stringify({ threadId, jobs, ...payload }) }] },
-    memoryBytes: 0,
+    rssBytes: 0,
     ...extra,
   });
 }
@@ -39,7 +39,7 @@ parentPort.on("message", async (msg) => {
     case "fatal":
       return reply(msg.id, { error: "memory access out of bounds" }, { fatal: "memory access out of bounds" });
     case "memory":
-      return reply(msg.id, { mode }, { memoryBytes: bytes });
+      return reply(msg.id, { mode }, { rssBytes: bytes });
     case "hang":
       for (;;) {
         // Busy loop: only terminate() can stop this.

@@ -10,8 +10,9 @@
  *     as ERR_WORKER_OUT_OF_MEMORY instead of killing the process),
  *   - reports a fatal WASM error (web-tree-sitter state is then undefined),
  *   - runs past the job timeout (terminated mid-job),
- *   - reports JS heap + ArrayBuffer memory above the cap (web-tree-sitter's
- *     WASM heap only grows, and lives outside resourceLimits),
+ *   - leaves process RSS above the cap after a job (web-tree-sitter's WASM
+ *     heap only grows and lives outside resourceLimits, and native
+ *     tree-sitter memory only goes back to the OS when the thread exits),
  *   - has served maxJobsPerWorker jobs, or sits idle past idleTimeoutMs.
  */
 
@@ -44,8 +45,12 @@ export interface GraphResultMessage {
   result: CallToolResult;
   /** Set when the job hit a fatal WASM error: the worker must not be reused. */
   fatal?: string;
-  /** Worker isolate's heapUsed + arrayBuffers (incl. WASM heaps) after the job. */
-  memoryBytes: number;
+  /**
+   * Process RSS after the job. Per-isolate figures miss most of it: a full
+   * brian map left ~1 GB of JS + WASM heap but 3.5 GB RSS, 2.2 GB of which
+   * terminating the worker returned (`external` even read >100 GB mid-job).
+   */
+  rssBytes: number;
 }
 
 export interface GraphWorkerPoolOptions {
@@ -57,8 +62,8 @@ export interface GraphWorkerPoolOptions {
   jobTimeoutMs?: number;
   /** Terminate an idle worker after this long (frees its WASM heap). */
   idleTimeoutMs?: number;
-  /** Replace the worker when its reported heapUsed + arrayBuffers exceeds this. */
-  maxWorkerMemoryBytes?: number;
+  /** Replace the worker when the process RSS after a job exceeds this. */
+  maxRssBytes?: number;
   /** V8 limits for the worker isolate; an overrun kills only the worker. */
   resourceLimits?: ResourceLimits;
   /** Worker entry point. Defaults to the bundled graph-worker script. */
@@ -72,8 +77,7 @@ const DEFAULTS = {
   maxJobsPerWorker: 100,
   jobTimeoutMs: 10 * 60_000,
   idleTimeoutMs: 5 * 60_000,
-  // A full map of a 4.5k-file repo leaves ~0.95 GB (JS heap + WASM heap).
-  maxWorkerMemoryBytes: 1.5 * 1024 ** 3,
+  maxRssBytes: 2 * 1024 ** 3,
   resourceLimits: { maxOldGenerationSizeMb: 4096 } as ResourceLimits,
 };
 
@@ -133,7 +137,7 @@ export class GraphWorkerPool {
       maxJobsPerWorker: options.maxJobsPerWorker ?? DEFAULTS.maxJobsPerWorker,
       jobTimeoutMs: options.jobTimeoutMs ?? DEFAULTS.jobTimeoutMs,
       idleTimeoutMs: options.idleTimeoutMs ?? DEFAULTS.idleTimeoutMs,
-      maxWorkerMemoryBytes: options.maxWorkerMemoryBytes ?? DEFAULTS.maxWorkerMemoryBytes,
+      maxRssBytes: options.maxRssBytes ?? DEFAULTS.maxRssBytes,
       resourceLimits: options.resourceLimits ?? DEFAULTS.resourceLimits,
     };
     const entry = options.workerUrl
@@ -222,7 +226,7 @@ export class GraphWorkerPool {
     slot.jobs++;
     let reason: RecycleReason | null = null;
     if (m.fatal) reason = "fatal-wasm";
-    else if (m.memoryBytes > this.opts.maxWorkerMemoryBytes) reason = "memory";
+    else if (m.rssBytes > this.opts.maxRssBytes) reason = "memory";
     else if (slot.jobs >= this.opts.maxJobsPerWorker) reason = "max-jobs";
     if (reason) void this.retire(slot, reason, m.fatal);
     else slot.worker.unref();

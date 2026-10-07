@@ -96,8 +96,8 @@ describe("GraphWorkerPool", () => {
     expect(c.jobs).toBe(1);
   });
 
-  it("recycles the worker when its reported memory exceeds the cap", async () => {
-    const pool = makePool({ maxWorkerMemoryBytes: 1_000 });
+  it("recycles the worker when the RSS it reports exceeds the cap", async () => {
+    const pool = makePool({ maxRssBytes: 1_000 });
     const big = await run(pool, { mode: "memory", bytes: 5_000 });
     const next = await run(pool, { mode: "ok" });
     expect(next.threadId).not.toBe(big.threadId);
