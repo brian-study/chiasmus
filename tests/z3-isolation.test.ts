@@ -13,7 +13,9 @@ async function solveOnce(smtlib: string): Promise<SolverResult> {
 
 // Every verify call must behave as if it ran in a fresh process. Z3 keeps
 // some declarations at context level (named assertions, define-fun), so these
-// fail if solves ever share a context.
+// fail if solves ever share a context. They also pass on the old leaking code:
+// they guard the per-solve context design, not the leak itself, which
+// tests/z3-memory.test.ts covers.
 describe("Z3 solves are isolated from each other", () => {
   it("lets consecutive calls declare the same name with different sorts", async () => {
     const asInt = await solveOnce(`(declare-const x Int) (assert (= x 5))`);
