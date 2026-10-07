@@ -9,9 +9,25 @@ const require = createRequire(import.meta.url);
 const adapters = new Map<string, LanguageAdapter>();
 const extToLanguage = new Map<string, string>();
 let discoveryPromise: Promise<void> | null = null;
+/** Set by registerAdapter() (discovery goes through addAdapter()); reset by clearAdapters(). */
+let registeredInCode = false;
 
 /** Register a custom language adapter */
 export function registerAdapter(adapter: LanguageAdapter): void {
+  addAdapter(adapter);
+  registeredInCode = true;
+}
+
+/**
+ * Whether this thread's registry holds adapters registered in code, which
+ * another thread (the graph worker) cannot reproduce: their extract() is a
+ * function, and discovery would not find them.
+ */
+export function hasCodeRegisteredAdapters(): boolean {
+  return registeredInCode;
+}
+
+function addAdapter(adapter: LanguageAdapter): void {
   adapters.set(adapter.language, adapter);
   for (const ext of adapter.extensions) {
     const normalized = ext.startsWith(".") ? ext : `.${ext}`;
@@ -41,6 +57,7 @@ export function clearAdapters(): void {
   adapters.clear();
   extToLanguage.clear();
   discoveryPromise = null;
+  registeredInCode = false;
 }
 
 /**
@@ -140,20 +157,20 @@ function registerFromModule(mod: any): void {
   if (Array.isArray(candidate)) {
     for (const adapter of candidate) {
       if (isLanguageAdapter(adapter)) {
-        registerAdapter(adapter);
+        addAdapter(adapter);
       }
     }
   } else if (isLanguageAdapter(candidate)) {
-    registerAdapter(candidate);
+    addAdapter(candidate);
   }
 
   // Also check named 'adapter' or 'adapters' exports
   if (mod.adapter && isLanguageAdapter(mod.adapter)) {
-    registerAdapter(mod.adapter);
+    addAdapter(mod.adapter);
   }
   if (Array.isArray(mod.adapters)) {
     for (const a of mod.adapters) {
-      if (isLanguageAdapter(a)) registerAdapter(a);
+      if (isLanguageAdapter(a)) addAdapter(a);
     }
   }
 }

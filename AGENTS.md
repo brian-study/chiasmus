@@ -67,6 +67,10 @@ src/
 │   ├── diff.ts            # graphDiff — set diff on nodes + (src,tgt) edge keys
 │   ├── entry-points.ts    # Heuristic entry-point detection (zero-in-degree exports)
 │   ├── cache.ts           # SHA256 per-file cache + LRU eviction + named snapshots (proper-lockfile)
+│   ├── repo-root.ts       # commonPathAncestor + findRepoRoot (git toplevel) — keys the cache per repo
+│   ├── tool-handlers.ts   # chiasmus_graph / chiasmus_map handlers (run inside the graph worker)
+│   ├── worker-pool.ts     # GraphWorkerPool — persistent worker thread, bounded queue, recycling
+│   ├── graph-worker.ts    # Worker-thread entry: runs one tool job, reports fatal-WASM + memory
 │   ├── mermaid.ts         # parseMermaid — Mermaid flowcharts/state diagrams → Prolog facts
 │   ├── type-env.ts        # TS/JS three-tier type inference + class field/method extraction
 │   ├── resolve-calls.ts   # Project-wide QN resolution: inheritance-aware field/method registry
@@ -231,7 +235,7 @@ Defined by `GRAPH_ANALYSES` in `src/mcp-server.ts` and dispatched by `runAnalysi
 | `layer-violation` | — | Calls that skip layers (e.g. handler → db bypassing service) |
 | `communities` | — | Louvain clusters (seed=42) with cohesion scores |
 | `hubs` | — | Top-degree nodes |
-| `bridges` | — | Top betweenness — nodes connecting otherwise-separate subgraphs |
+| `bridges` | — | Top betweenness — nodes connecting otherwise-separate subgraphs. Exact up to 2,000 nodes; above that a deterministic 500-pivot Brandes estimate, flagged by a top-level `approximate` field (and a `%` comment before `bridge/2` facts) |
 | `surprises` | — | Cross-community + peripheral → hub edges |
 | `diff` | `against` | Current graph vs a saved snapshot; covers nodes, edges, imports, exports, hyperedges |
 | `entry-points` | — | Zero-in-degree exports (feeds `dead-code`) |
@@ -240,6 +244,7 @@ Defined by `GRAPH_ANALYSES` in `src/mcp-server.ts` and dispatched by `runAnalysi
 Cache + snapshot workflow:
 
 - `cache=true` enables the SHA256 per-file extraction cache (`~/.cache/chiasmus` or `$CHIASMUS_CACHE_DIR`). Unchanged files skip re-parsing across calls.
+- The cache bucket (`repoKey`) is the analysed repository: the git toplevel above the files' common ancestor, else that ancestor (`repoKeyForFiles` / `findRepoRoot`). Snapshots saved for one repo are invisible to another; buckets from the old cwd-derived key are never read.
 - `save_snapshot="main"` persists the extracted `CodeGraph` under a name; requires `cache=true`.
 - `analysis="diff"` + `against="main"` compares current extraction to that snapshot.
 - Guard: `save_snapshot` and `against` naming the same snapshot is rejected — otherwise the save would clobber the baseline before the diff runs.
@@ -301,6 +306,8 @@ Exports default to every top-level definition, and narrow to the explicit list w
 
 Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for provenance, why Scheme can't use the native bindings, and how to rebuild.
 
+web-tree-sitter (all four Lisp grammars) is initialised once per thread: `initWasm()` and each grammar's `Language.load()` are single-flight promises, since concurrent parses on a cold thread would otherwise each instantiate their own runtime and grammar. `extractGraph` extracts files one at a time, so each WASM tree is walked and freed (`tree.delete()`) before the next file parses; started all at once, every tree of the batch sat in the WASM heap together (2.55 GB peak RSS for brian's 3,864 `.clj` files, 0.5 GB one at a time; the wasm32 heap tops out at 4 GB).
+
 ### Import resolution
 
 `extractGraph(files, { repoPath })` resolves each `ImportsFact.source` to a repo-relative `resolved` path when possible:
@@ -346,6 +353,13 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 - Test imports use `../src/solvers/z3-solver.js` (not `../../dist/...`)
 - Template slots use `{{SLOT:name}}` markers in skeleton strings
 - Lint tool (`formalize/validate.ts`) auto-fixes markdown fences, `(check-sat)`, `(get-model)`, `(set-logic)` before reporting errors
+
+### Graph worker
+- `chiasmus_graph` and `chiasmus_map` run in a `node:worker_threads` worker (`runGraphTool` → `GraphWorkerPool`), so tree-sitter extraction and graph analyses never block the MCP request thread (`/healthz`, `initialize`, other sessions). One process-wide worker, shared by every session, fed by a FIFO queue capped at 32 waiting jobs (beyond that a job gets `{"error":"graph worker queue is full ..."}` immediately). Jobs run one at a time, so a small graph call still waits behind a running large one (a 0.4 s bridges call finished 12 s after a 40 s brian map it queued behind); only graph calls wait, not the rest of the server.
+- The worker persists between jobs (grammars stay loaded) and is replaced before the next job when it crashes or exits (including a `resourceLimits` overrun: 4 GiB old-gen by default, `CHIASMUS_GRAPH_WORKER_HEAP_MB`), reports a fatal WASM error (`isFatalWasmError` — web-tree-sitter state is undefined after a trap), runs past the job timeout (10 min, `CHIASMUS_GRAPH_JOB_TIMEOUT_MS`), has grown process RSS by over 2 GiB since it started, measured after a job (three full brian Clojure maps on one worker now peak at 0.6-0.9 GB; before extraction went one file at a time each peaked at 2.6 GB; growth, not absolute RSS, because freed memory can stay in the process after a recycle and would otherwise recycle every later job), serves 100 jobs, idles for 5 min, or is running a job whose MCP request was cancelled (the handler passes `extra.signal`; a cancelled job still in the queue is just dropped — the SDK aborts the signal on `notifications/cancelled` and when the session's transport closes). A lost job comes back as `{"error":"graph worker crashed while running <tool>: ..."}`.
+- Worker env is `SHARE_ENV` (live `CHIASMUS_CACHE_DIR` etc.). Adapter discovery runs in the worker per job when `config.adapterDiscovery` is set; adapters registered in code with `registerAdapter()` can't be sent to it (`extract()` is a function), so once any is registered on the calling thread (`hasCodeRegisteredAdapters()`) `runGraphTool` runs the tools inline on that thread, as before the worker existed. `CHIASMUS_GRAPH_WORKER=off` forces inline execution.
+- From `dist/` the worker is `dist/graph/graph-worker.js`; from source (tsx, vitest) it is the `.ts` file run with the parent's loader flags (`--import`/`--require`/`--loader`/`--conditions`) plus `--import tsx` — any other flag in an explicit worker `execArgv` makes `new Worker()` throw. Shutdown (`setupShutdownHandlers`, the HTTP server's SIGINT/SIGTERM) stops it via `shutdownGraphWorkers()`, which waits for every worker still stopping (one retiring after a timeout included) and leaves the shared pool closed, so later graph calls get `{"error":"graph worker pool is shut down"}`.
+- Never `worker.terminate()` (or `process.exit()`) while the worker may be inside native tree-sitter: node-addon-api's `Napi::Error` escapes during teardown and aborts the whole process (reproduced 2 runs in 3). Retiring a busy worker raises a shared cancel flag checked before each file is parsed and walked (`setExtractionCheckpoint`; WASM-grammar files parse after an await, so the check also runs right before the parse), then sends an `exit` message the worker handles from JS; `terminate()` is only the fallback after a 3 s grace period, when the thread is in JS/WASM.
 
 ### Graph cache
 - `saveFileCache` serializes all manifest read-modify-writes through `proper-lockfile` on `<repoDir>/.lock` — concurrent MCP dispatches don't tear the manifest

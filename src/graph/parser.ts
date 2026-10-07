@@ -18,9 +18,44 @@ let nativeParserInstance: any = null;
 let WasmParserClass: any = null;
 let WasmLanguageClass: any = null;
 let wasmParserInstance: any = null;
+/** In-flight or finished web-tree-sitter init, shared by concurrent callers. */
+let wasmInit: Promise<void> | null = null;
 const languageCache = new Map<string, { lang: any; wasm: boolean }>();
-/** Compiled WASM Languages keyed by .wasm path, so shared grammars compile once. */
-const wasmLanguageByPath = new Map<string, any>();
+/**
+ * WASM Language loads keyed by .wasm path, stored before the first await so
+ * concurrent callers share one load and shared grammars compile once.
+ */
+const wasmLanguageByPath = new Map<string, Promise<any>>();
+/** First fatal WASM error seen by this thread's web-tree-sitter instance. */
+let wasmFailureMessage: string | null = null;
+// `WebAssembly` isn't in this project's TS libs (ES2023 + node types).
+const WasmRuntimeError = (globalThis as { WebAssembly?: { RuntimeError: new () => Error } })
+  .WebAssembly?.RuntimeError;
+
+/**
+ * A WASM trap (`RuntimeError: memory access out of bounds`, `unreachable`,
+ * an Emscripten `Aborted(...)`) unwinds out of web-tree-sitter mid-operation
+ * and leaves its module-wide heap and stack in an undefined state. Every
+ * later parse in the same thread is suspect, and the module can't be
+ * re-instantiated in place — only a fresh thread recovers.
+ */
+export function isFatalWasmError(e: unknown): boolean {
+  if (WasmRuntimeError && e instanceof WasmRuntimeError) return true;
+  if (!(e instanceof Error)) return false;
+  return /memory access out of bounds|^Aborted\(/.test(e.message);
+}
+
+/** Record `e` if it is a fatal WASM error (first one wins). */
+export function noteWasmError(e: unknown): void {
+  if (wasmFailureMessage === null && isFatalWasmError(e)) {
+    wasmFailureMessage = e instanceof Error ? e.message : String(e);
+  }
+}
+
+/** Message of the fatal WASM error this thread hit, or null if none. */
+export function wasmFailure(): string | null {
+  return wasmFailureMessage;
+}
 
 interface LangConfig {
   /** npm package providing the grammar. Omitted for grammars vendored in `grammars/`. */
@@ -95,13 +130,23 @@ function getNativeParserInstance(): any {
   return nativeParserInstance;
 }
 
-async function initWasm(): Promise<void> {
-  if (!WasmParserClass) {
+/**
+ * Single-flight: extractGraph starts every file before any finishes, and
+ * Parser.init() does not dedupe concurrent calls — each would instantiate
+ * its own runtime, and grammars would bind to whichever one they loaded
+ * into. A failed init is forgotten so a later call retries.
+ */
+function initWasm(): Promise<void> {
+  wasmInit ??= (async () => {
     const mod = require("web-tree-sitter");
-    WasmLanguageClass = mod.Language;
     await mod.Parser.init();
+    WasmLanguageClass = mod.Language;
     WasmParserClass = mod.Parser;
-  }
+  })().catch((e) => {
+    wasmInit = null;
+    throw e;
+  });
+  return wasmInit;
 }
 
 function getLangConfig(language: string): LangConfig | null {
@@ -153,13 +198,18 @@ async function loadLanguageAsync(language: string): Promise<{ lang: any; wasm: b
         : PACKAGE_ROOT;
       const wasmPath = resolve(baseDir, config.wasmFile);
       // Languages can share one grammar file (racket reuses scheme's), so
-      // cache the compiled Language by path to avoid a second compile.
-      let lang = wasmLanguageByPath.get(wasmPath);
-      if (!lang) {
-        lang = await WasmLanguageClass.load(wasmPath);
-        wasmLanguageByPath.set(wasmPath, lang);
+      // cache the Language load by path to avoid a second compile.
+      let load = wasmLanguageByPath.get(wasmPath);
+      if (!load) {
+        const started = WasmLanguageClass.load(wasmPath) as Promise<any>;
+        wasmLanguageByPath.set(wasmPath, started);
+        // Forget a failed load so a later call retries, as before.
+        started.catch(() => {
+          if (wasmLanguageByPath.get(wasmPath) === started) wasmLanguageByPath.delete(wasmPath);
+        });
+        load = started;
       }
-      const entry = { lang, wasm: true };
+      const entry = { lang: await load, wasm: true };
       languageCache.set(language, entry);
       return entry;
     }
@@ -171,7 +221,8 @@ async function loadLanguageAsync(language: string): Promise<{ lang: any; wasm: b
     const entry = { lang: mod, wasm: false };
     languageCache.set(language, entry);
     return entry;
-  } catch {
+  } catch (e) {
+    noteWasmError(e);
     return null;
   }
 }
@@ -209,8 +260,16 @@ function getWasmParserInstance(): any {
   return wasmParserInstance;
 }
 
-/** Async parse — handles both native CJS and WASM grammars. */
-export async function parseSourceAsync(content: string, filePath: string): Promise<any | null> {
+/**
+ * Async parse — handles both native CJS and WASM grammars. `beforeParse`
+ * runs after the language has loaded, right before parsing, and may throw
+ * to abandon the parse.
+ */
+export async function parseSourceAsync(
+  content: string,
+  filePath: string,
+  beforeParse?: () => void,
+): Promise<any | null> {
   const language = getLanguageForFile(filePath);
   if (!language) return null;
 
@@ -219,11 +278,13 @@ export async function parseSourceAsync(content: string, filePath: string): Promi
 
   if (loaded.wasm) {
     await initWasm();
+    beforeParse?.();
     const parser = getWasmParserInstance();
     parser.setLanguage(loaded.lang);
     return parser.parse(content);
   }
 
+  beforeParse?.();
   const parser = getNativeParserInstance();
   parser.setLanguage(loaded.lang);
   return parser.parse(content);

@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createChiasmusServer } from "./mcp-server.js";
 import { exitOnFatalSolverError } from "./solvers/fatal.js";
+import { shutdownGraphWorkers } from "./graph/worker-pool.js";
 import type { Server as McpProtocolServer } from "@modelcontextprotocol/sdk/server/index.js";
 import type { SkillLibrary } from "./skills/library.js";
 
@@ -280,6 +281,7 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     for (const sessionId of [...sessions.keys()]) {
       await closeSession(sessionId);
     }
+    await shutdownGraphWorkers();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   };
 
