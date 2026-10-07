@@ -26,7 +26,7 @@ import { MAX_FILE_SIZE } from "./graph/analyses.js";
 import { commonPathAncestor } from "./graph/repo-root.js";
 import { extractGraph } from "./graph/extractor.js";
 import { GRAPH_ANALYSES } from "./graph/tool-handlers.js";
-import { runGraphTool, shutdownGraphWorkers } from "./graph/worker-pool.js";
+import { exitAfterStoppingGraphWorkers, runGraphTool, shutdownGraphWorkers } from "./graph/worker-pool.js";
 import { readFileSync, statSync } from "node:fs";
 import { craftTemplate } from "./skills/craft.js";
 import { parseMermaid } from "./graph/mermaid.js";
@@ -1149,7 +1149,9 @@ const isMain = resolvedArg === thisFile
 
 if (isMain) {
   // A solver WASM abort would otherwise leave this process hung, not dead.
-  exitOnFatalSolverError();
+  // A busy graph worker is stopped first: tearing it down inside native code
+  // aborts the process instead of exiting 1.
+  exitOnFatalSolverError(exitAfterStoppingGraphWorkers);
   const { server, library } = await createChiasmusServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);

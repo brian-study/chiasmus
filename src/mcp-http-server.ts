@@ -6,7 +6,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createChiasmusServer } from "./mcp-server.js";
 import { exitOnFatalSolverError } from "./solvers/fatal.js";
-import { shutdownGraphWorkers } from "./graph/worker-pool.js";
+import { exitAfterStoppingGraphWorkers, shutdownGraphWorkers } from "./graph/worker-pool.js";
 import type { Server as McpProtocolServer } from "@modelcontextprotocol/sdk/server/index.js";
 import type { SkillLibrary } from "./skills/library.js";
 
@@ -296,8 +296,9 @@ const isMain = process.argv[1]?.endsWith("mcp-http-server.ts")
 
 if (isMain) {
   // A solver WASM abort leaves the process hung rather than dead, so
-  // Restart=on-failure never fired; exit so it does.
-  exitOnFatalSolverError();
+  // Restart=on-failure never fired; exit so it does — after stopping a busy
+  // graph worker, whose teardown inside native code would abort instead.
+  exitOnFatalSolverError(exitAfterStoppingGraphWorkers);
   try {
     const options = parseHttpOptions();
     await startChiasmusHttpServer(options);

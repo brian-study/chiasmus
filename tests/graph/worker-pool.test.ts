@@ -1,8 +1,10 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import {
   GraphWorkerPool,
+  exitAfterStoppingGraphWorkers,
   runGraphTool,
   shutdownGraphWorkers,
   workerEntryFor,
@@ -324,6 +326,55 @@ describe("runGraphTool", () => {
       if (prev === undefined) delete process.env.CHIASMUS_GRAPH_WORKER;
       else process.env.CHIASMUS_GRAPH_WORKER = prev;
     }
+  });
+});
+
+describe("exitAfterStoppingGraphWorkers", () => {
+  // The fatal-solver-error exit: process.exit() under a worker inside native
+  // tree-sitter aborts the process (exit 134, a core dump under systemd)
+  // instead of exiting 1, so a busy worker must be stopped first.
+  it("exits at once when no graph job is running", async () => {
+    const pool = makePool();
+    await run(pool, { mode: "ok" }); // worker started, now idle
+    const exit = vi.fn();
+    exitAfterStoppingGraphWorkers(1, { exit, pool });
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it("stops a busy worker cooperatively before exiting", async () => {
+    const terminate = vi.spyOn(Worker.prototype, "terminate");
+    try {
+      const pool = makePool({ cancelGraceMs: 20_000 });
+      const job = run(pool, { mode: "spin-until-cancelled" });
+      await new Promise((r) => setTimeout(r, 100));
+      let workerGoneAtExit: boolean | undefined;
+      const exit = vi.fn(() => {
+        const internals = pool as unknown as { slot: unknown; stopping: Set<unknown> };
+        workerGoneAtExit = internals.slot === null && internals.stopping.size === 0;
+      });
+      exitAfterStoppingGraphWorkers(1, { exit, pool });
+      expect(exit).not.toHaveBeenCalled();
+      expect((await job).error).toBe("graph worker pool is shut down");
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1), { timeout: 5_000 });
+      expect(exit).toHaveBeenCalledTimes(1);
+      expect(workerGoneAtExit).toBe(true);
+      expect(terminate).not.toHaveBeenCalled();
+    } finally {
+      terminate.mockRestore();
+    }
+  });
+
+  it("exits at the deadline when a busy worker does not stop in time", async () => {
+    const pool = makePool({ cancelGraceMs: 2_000 });
+    void run(pool, { mode: "hang" }); // ignores the cancel flag until terminate()
+    await new Promise((r) => setTimeout(r, 100));
+    const exit = vi.fn();
+    const t0 = performance.now();
+    exitAfterStoppingGraphWorkers(1, { exit, pool, deadlineMs: 200 });
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1), { timeout: 1_500 });
+    expect(performance.now() - t0).toBeLessThan(1_500);
+    expect(exit).toHaveBeenCalledTimes(1);
   });
 });
 

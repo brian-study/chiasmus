@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -180,6 +180,59 @@ describe("CLI entries exit when a solver module crashes", () => {
       await rm(home, { recursive: true, force: true });
     }
   }, 90_000);
+
+  it("chiasmus-http exits 1, without a native abort, when Z3 crashes during a graph job", async () => {
+    // process.exit() while the graph worker is inside native tree-sitter
+    // aborts the process ("terminate called after throwing an instance of
+    // 'Napi::Error'", exit 134 and a core dump) instead of exiting 1, so the
+    // fatal exit must stop a busy graph worker first.
+    const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-graph-"));
+    // ~8 s of extraction uncancelled (3.9 s for half as many at load ~15),
+    // so the map is still running when the trap lands well under a second in.
+    const files: string[] = [];
+    for (let f = 0; f < 1600; f++) {
+      let src = "";
+      for (let i = 0; i < 40; i++) {
+        src += `export function f${f}_${i}(a: number): number { return g${i}(a) + h${f}(a, ${i}); }\n`;
+      }
+      const p = join(home, `m${f}.ts`);
+      await writeFile(p, src);
+      files.push(p);
+    }
+    const port = await freePort();
+    const entry = startEntry(
+      "mcp-http-server.ts",
+      ["--host", "127.0.0.1", "--port", String(port), "--path", "/mcp", "--chiasmus-home", home],
+      home,
+    );
+    const client = new Client({ name: "entry-fatal-test", version: "0.0.1" });
+    try {
+      await waitForStderr(entry, "MCP Streamable HTTP server running");
+      await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`)));
+      // Warm-up: worker started and grammar loaded, so the map below is
+      // extracting by the time Z3 traps.
+      await client.callTool({ name: "chiasmus_graph", arguments: { files: [files[0]], analysis: "summary" } });
+      const map = client
+        .callTool({ name: "chiasmus_map", arguments: { files } }, undefined, { timeout: 280_000 })
+        .then((r) => (r.content as Array<{ text: string }>)[0].text, () => "request failed");
+      await new Promise((r) => setTimeout(r, 300));
+      void client.callTool({ name: "chiasmus_verify", arguments: { solver: "z3", input: Z3_TRAP } }).catch(() => undefined);
+
+      const code = await entry.exit;
+      const stderr = entry.stderr();
+      expect(stderr).toContain("fatal z3 WASM error, exiting");
+      expect(stderr).not.toMatch(/Napi::Error|terminate called/);
+      expect(code).toBe(1);
+      // The pool was closed (failing the running map) before the process
+      // exited; an immediate process.exit() leaves the map unanswered.
+      const mapOutcome = await Promise.race([map, new Promise<string>((r) => setTimeout(() => r("unanswered"), 2_000))]);
+      expect(mapOutcome).toContain("graph worker pool is shut down");
+    } finally {
+      await client.close().catch(() => undefined);
+      await stopEntry(entry);
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it.runIf(process.env.CHIASMUS_Z3_ABORT_E2E)(
     "chiasmus-http exits 1 when a Z3 check aborts out of memory (CHIASMUS_Z3_ABORT_E2E=1)",
