@@ -321,6 +321,7 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 
 ### Z3 Solver
 - Z3 WASM init loads ~30MB — cached in module scope (`z3Promise` singleton)
+- Each solve runs in a Z3 context of its own that is deleted before `solve()` returns; solves are serialized. Only the low-level API (`z3.Z3.*`) may touch that context — high-level wrappers free objects from a FinalizationRegistry, which never freed the context (~8 MB leaked per call until the fixed 2 GiB WASM heap aborted) and would run after the delete. Do not share a context across solves either: Z3 keeps `:named` labels and `define-fun`s at context level and adds them to later models. `z3AllocatedBytes()` reports Z3's live allocation for leak checks
 - Input is sanitized: `(check-sat)`, `(get-model)`, `(set-logic)`, `(exit)` are auto-stripped
 - Use `(assert (! expr :named label))` for readable UNSAT cores
 - Use `(= flag (or ...))` NOT `(=> ... flag)` — implication is trivially SAT
@@ -337,6 +338,7 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 - Prolog clauses must end with periods
 
 ### General
+- An Emscripten abort or WASM trap (`isFatalWasmError` in `solvers/fatal.ts`; both throw `WebAssembly.RuntimeError`, never match on message text — solver errors quote user input) leaves a solver module unusable: the next call into it can block the event loop forever. Z3 and Prolog stop calling into the module, report the error through `reportFatalSolverError`, and answer later solves with an error. Both CLI entries call `exitOnFatalSolverError()` (log + `process.exit(1)`) so systemd restarts the daemon; library users get no exit. New catch blocks around solver calls must start with `rethrowIfFatal(e)`
 - `SolverSession.create()` is async (Z3 init) — always `await` it
 - `SkillLibrary.create()` is async (SQLite init) — always `await` it
 - Correction loop delegates to `repl-sandbox` package's generic `correctionLoop`

@@ -12,6 +12,7 @@ import {
 import { discoverAdapters } from "./graph/adapter-registry.js";
 import { loadConfig } from "./config.js";
 import { SolverSession } from "./solvers/session.js";
+import { exitOnFatalSolverError } from "./solvers/fatal.js";
 import { SkillLibrary } from "./skills/library.js";
 import { FormalizationEngine } from "./formalize/engine.js";
 import { SkillLearner } from "./skills/learner.js";
@@ -1349,6 +1350,8 @@ const isMain = resolvedArg === thisFile
   || process.argv[1]?.endsWith("mcp-server.js");
 
 if (isMain) {
+  // A solver WASM abort would otherwise leave this process hung, not dead.
+  exitOnFatalSolverError();
   const { server, library } = await createChiasmusServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);

@@ -1,4 +1,5 @@
 import { initProlog, type PrologFull } from "prolog-wasm-full";
+import { abortError, isFatalWasmError, reportFatalSolverError, rethrowIfFatal } from "./fatal.js";
 import type {
   PrologAnswer,
   PrologBatchInput,
@@ -40,6 +41,24 @@ let plPromise: Promise<PrologFull> | null = null;
 let pathCounter = 0;
 let sessionCounter = 0;
 
+// Set once the WASM module aborts or traps; nothing may call into it after
+// that. Every catch below rethrows such errors (rethrowIfFatal) so they end
+// the solve instead of becoming a result followed by cleanup calls.
+let fatalError: Error | null = null;
+
+function markFatal(e: unknown): void {
+  if (fatalError) return;
+  fatalError = e instanceof Error ? e : new Error(String(e));
+  reportFatalSolverError("prolog", fatalError);
+}
+
+function unavailable(error: Error): SolverResult {
+  return {
+    status: "error",
+    error: `Prolog is unavailable after a fatal WASM error (${error.message}); restart the process`,
+  };
+}
+
 function uniqueSessionModule(): string {
   return `chiasmus_session_${++sessionCounter}`;
 }
@@ -47,6 +66,10 @@ function uniqueSessionModule(): string {
 async function getPl(): Promise<PrologFull> {
   plPromise ??= (async () => {
     const pl = await initProlog();
+    // Emscripten calls this before unwinding an abort.
+    Object.assign(pl.em, {
+      onAbort: (what: unknown) => markFatal(abortError(what)),
+    });
     // The message-capture predicate and hook must be module-qualified to
     // `user:`. SWI invokes message_hook from whichever module is emitting
     // the message (often `system:` for low-level errors), and an unqualified
@@ -75,7 +98,8 @@ async function getPl(): Promise<PrologFull> {
 function clearMessages(pl: PrologFull): void {
   try {
     pl.stock.call(`retractall(user:'$chiasmus_msg'(_, _))`);
-  } catch {
+  } catch (e) {
+    rethrowIfFatal(e);
     /* best-effort */
   }
 }
@@ -86,7 +110,8 @@ function collectErrorMessages(pl: PrologFull): string[] {
     return rows
       .map((r) => (r.M == null ? "" : String(r.M).trim()))
       .filter((s) => s.length > 0);
-  } catch {
+  } catch (e) {
+    rethrowIfFatal(e);
     return [];
   }
 }
@@ -208,6 +233,7 @@ function runQuery(
   try {
     handle = pl.query(normalized);
   } catch (e) {
+    rethrowIfFatal(e);
     return { error: e instanceof Error ? e.message : String(e) };
   }
 
@@ -238,11 +264,13 @@ function runQuery(
     } finally {
       try {
         handle.close();
-      } catch {
+      } catch (e) {
+        rethrowIfFatal(e);
         /* best-effort */
       }
     }
   } catch (e) {
+    rethrowIfFatal(e);
     if (e instanceof LimitExceededError || limitExceeded) {
       return { error: "inference limit exceeded" };
     }
@@ -283,6 +311,7 @@ function cleanupSession(
       )
       .all();
   } catch (e) {
+    rethrowIfFatal(e);
     warnings.push(
       `enumerate predicates in ${moduleId}: ${e instanceof Error ? e.message : String(e)}`,
     );
@@ -302,6 +331,7 @@ function cleanupSession(
         const ok = pl.stock.call(`abolish(${moduleId}:${quoted}/${a})`);
         if (!ok) warnings.push(`abolish ${moduleId}:${quoted}/${a} returned false`);
       } catch (e) {
+        rethrowIfFatal(e);
         warnings.push(
           `abolish ${moduleId}:${f}/${a}: ${e instanceof Error ? e.message : String(e)}`,
         );
@@ -312,6 +342,7 @@ function cleanupSession(
       const ok = pl.stock.call(`abolish(${moduleId}:${f}/${a})`);
       if (!ok) warnings.push(`abolish ${moduleId}:${f}/${a} returned false`);
     } catch (e) {
+      rethrowIfFatal(e);
       warnings.push(
         `abolish ${moduleId}:${f}/${a}: ${e instanceof Error ? e.message : String(e)}`,
       );
@@ -321,6 +352,7 @@ function cleanupSession(
   try {
     pl.stock.call(`unload_file('${path}')`);
   } catch (e) {
+    rethrowIfFatal(e);
     warnings.push(
       `unload_file ${path}: ${e instanceof Error ? e.message : String(e)}`,
     );
@@ -328,7 +360,8 @@ function cleanupSession(
 
   try {
     pl.em.FS.unlink(path);
-  } catch {
+  } catch (e) {
+    rethrowIfFatal(e);
     // File may already be gone (e.g. consult never ran). Not a warning —
     // we explicitly call cleanupSession even on the never-consulted path.
   }
@@ -344,7 +377,8 @@ function cleanupSession(
 function tryUnlink(pl: PrologFull, path: string): string[] {
   try {
     pl.em.FS.unlink(path);
-  } catch {
+  } catch (e) {
+    rethrowIfFatal(e);
     /* never written */
   }
   return [];
@@ -503,6 +537,7 @@ function solveSessionQuery(
     try {
       pl.stock.call(`retractall(${moduleId}:trace_goal(_))`);
     } catch (e) {
+      rethrowIfFatal(e);
       return {
         status: "error",
         error: `failed to reset trace: ${e instanceof Error ? e.message : String(e)}`,
@@ -558,29 +593,15 @@ function solveSessionQuery(
 export function createPrologSolver(): Solver {
   let disposed = false;
 
-  const solveProgram = async (
+  // Synchronous from start to finish, so a fatal error is marked before any
+  // other solve resumes from awaiting the module.
+  const solveLoaded = (
+    pl: PrologFull,
     userProgram: string,
     queries: string[],
     explain: boolean,
     inferenceBudget: number,
-  ): Promise<SolverResult[]> => {
-    if (disposed) {
-      return [{ status: "error", error: "Solver has been disposed" }];
-    }
-    if (queries.length === 0) {
-      return [{ status: "error", error: "At least one Prolog query is required" }];
-    }
-
-    let pl: PrologFull;
-    try {
-      pl = await getPl();
-    } catch (e) {
-      return [{
-        status: "error",
-        error: `prolog init failed: ${e instanceof Error ? e.message : String(e)}`,
-      }];
-    }
-
+  ): SolverResult[] => {
     const moduleId = uniqueSessionModule();
     const path = uniqueTempPath();
     if (!SAFE_PATH_RE.test(path)) {
@@ -619,6 +640,7 @@ export function createPrologSolver(): Solver {
     try {
       pl.em.FS.writeFile(path, program);
     } catch (e) {
+      rethrowIfFatal(e);
       return finalize([{
         status: "error",
         error: `failed to stage program: ${e instanceof Error ? e.message : String(e)}`,
@@ -630,6 +652,7 @@ export function createPrologSolver(): Solver {
       pl.stock.call(`consult('${path}')`);
       consulted = true;
     } catch (e) {
+      rethrowIfFatal(e);
       return finalize([{
         status: "error",
         error: `consult failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -653,6 +676,41 @@ export function createPrologSolver(): Solver {
       if (result.status === "error") break;
     }
     return finalize(results);
+  };
+
+  const solveProgram = async (
+    userProgram: string,
+    queries: string[],
+    explain: boolean,
+    inferenceBudget: number,
+  ): Promise<SolverResult[]> => {
+    if (disposed) {
+      return [{ status: "error", error: "Solver has been disposed" }];
+    }
+    if (queries.length === 0) {
+      return [{ status: "error", error: "At least one Prolog query is required" }];
+    }
+    if (fatalError) return [unavailable(fatalError)];
+
+    let pl: PrologFull;
+    try {
+      pl = await getPl();
+    } catch (e) {
+      return [{
+        status: "error",
+        error: `prolog init failed: ${e instanceof Error ? e.message : String(e)}`,
+      }];
+    }
+    // Another solve may have broken the module while this one waited.
+    if (fatalError) return [unavailable(fatalError)];
+
+    try {
+      return solveLoaded(pl, userProgram, queries, explain, inferenceBudget);
+    } catch (e) {
+      if (!isFatalWasmError(e)) throw e;
+      markFatal(e);
+      return [{ status: "error", error: e instanceof Error ? e.message : String(e) }];
+    }
   };
 
   return {
