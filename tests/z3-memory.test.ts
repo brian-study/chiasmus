@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { createZ3Solver, z3AllocatedBytes } from "../src/solvers/z3-solver.js";
 import type { SolverResult } from "../src/solvers/types.js";
 
@@ -10,6 +11,19 @@ async function solveOnce(smtlib: string): Promise<SolverResult> {
   } finally {
     solver.dispose();
   }
+}
+
+// Resident plus swapped-out memory of this process (Linux); null elsewhere.
+// Swap counts too: on a loaded host the kernel pages a leak out of RSS.
+function processMemoryBytes(): number | null {
+  let status: string;
+  try {
+    status = readFileSync("/proc/self/status", "utf8");
+  } catch {
+    return null;
+  }
+  const kb = (field: string) => Number(new RegExp(`^${field}:\\s+(\\d+) kB`, "m").exec(status)?.[1] ?? 0);
+  return (kb("VmRSS") + kb("VmSwap")) * 1024;
 }
 
 // One problem of each shape the daemon sees: sat with a model, unsat with a
@@ -49,8 +63,20 @@ describe("Z3 solver memory", () => {
     async () => {
       for (let i = 0; i < 5; i++) await solveOnce(problem(i));
       const before = await z3AllocatedBytes();
-      for (let i = 0; i < 2000; i++) await solveOnce(problem(i));
+      let processBefore: number | null = null;
+      for (let i = 0; i < 2000; i++) {
+        // Process memory rises over the first few hundred calls (JS and
+        // allocator warm-up), then levels off; measure the plateau only.
+        if (i === 500) processBefore = processMemoryBytes();
+        await solveOnce(problem(i));
+      }
       expect((await z3AllocatedBytes()) - before).toBeLessThan(1_000_000);
+      // A leak outside Z3's allocator, e.g. JS objects kept per call. 64 MB
+      // over 1500 calls is ~43 KB a call; the fixed code grows ~7-10 MB here.
+      const processAfter = processMemoryBytes();
+      if (processBefore !== null && processAfter !== null) {
+        expect(processAfter - processBefore).toBeLessThan(64 * 1024 * 1024);
+      }
     },
     300_000,
   );
