@@ -157,6 +157,20 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     }
   };
 
+  // A session created for an initialize request that never registered (the
+  // transport rejected the request, or connect or handleRequest threw) has no
+  // session ID to expire or delete, so its server and library close here.
+  const closeUnlessRegistered = async (session: Session): Promise<void> => {
+    const id = session.transport.sessionId;
+    if (id !== undefined && sessions.get(id) === session) return;
+    clearTimeout(session.idleTimer);
+    try {
+      await session.server.close();
+    } finally {
+      session.library.close();
+    }
+  };
+
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? options.host}`);
     if (url.pathname === "/healthz") {
@@ -171,6 +185,7 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
 
     const sessionId = req.headers["mcp-session-id"];
     const sid = Array.isArray(sessionId) ? sessionId[0] : sessionId;
+    let starting: Session | undefined;
 
     try {
       if (req.method === "POST") {
@@ -199,6 +214,7 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
             library: created.library,
             idleTimer: setTimeout(() => undefined, options.sessionTtlMs),
           };
+          starting = session;
           session.idleTimer.unref?.();
           transport.onclose = () => {
             const transportSessionId = transport.sessionId;
@@ -243,6 +259,12 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
       const code = e instanceof SyntaxError ? -32700 : -32603;
       console.error(`[Chiasmus] MCP HTTP request failed: ${message}`);
       sendJson(res, e instanceof SyntaxError ? 400 : 500, jsonRpcError(code, message));
+    } finally {
+      if (starting) {
+        await closeUnlessRegistered(starting).catch((e) => {
+          console.error(`[Chiasmus] closing unregistered MCP session failed: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }
     }
   });
 
