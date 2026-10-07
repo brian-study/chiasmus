@@ -188,6 +188,30 @@ describe("GraphWorkerPool", () => {
     const r = await run(pool, { mode: "ok" });
     expect(r.error).toMatch(/^graph worker crashed while running chiasmus_graph: /);
   });
+
+  it("resolves with an error result when the Worker constructor throws", async () => {
+    // Node rejects per-process flags in an explicit worker execArgv, synchronously.
+    const pool = makePool({ execArgv: ["--max-old-space-size=64"] });
+    const settled = await Promise.allSettled([run(pool, { mode: "ok" }), run(pool, { mode: "ok" })]);
+    for (const s of settled) {
+      expect(s.status).toBe("fulfilled");
+      if (s.status === "fulfilled") {
+        expect(s.value.error).toMatch(/^graph worker could not start for chiasmus_graph: .*--max-old-space-size/);
+      }
+    }
+  });
+
+  it("survives the Worker constructor throwing while replacing a worker after a job", async () => {
+    const pool = makePool({ maxJobsPerWorker: 1 });
+    const first = run(pool, { mode: "sleep", ms: 100 });
+    // The replacement spawned from the result listener can no longer start.
+    (pool as unknown as { execArgv: string[] }).execArgv = ["--max-old-space-size=64"];
+    const queued = run(pool, { mode: "ok" });
+    expect((await first).mode).toBe("sleep");
+    expect((await queued).error).toMatch(/^graph worker could not start for chiasmus_graph: /);
+    (pool as unknown as { execArgv: string[] }).execArgv = [];
+    expect((await run(pool, { mode: "ok" })).jobs).toBe(1);
+  });
 });
 
 describe("workerEntryFor", () => {
@@ -201,6 +225,18 @@ describe("workerEntryFor", () => {
     const entry = workerEntryFor("file:///pkg/src/graph/worker-pool.ts", ["--conditions", "node"]);
     expect(entry.url.href).toBe("file:///pkg/src/graph/graph-worker.ts");
     expect(entry.execArgv).toEqual(["--conditions", "node", "--import", "tsx"]);
+  });
+
+  it("forwards only loader flags to a source worker (others make new Worker() throw)", () => {
+    const parent = [
+      "--max-old-space-size=8192", "--expose-gc", "--title=chiasmus", "--experimental-import-meta-resolve",
+      "--require", "/pkg/suppress-warnings.cjs", "--conditions", "node", "-C", "development",
+      "--import=file:///pkg/hook.mjs",
+    ];
+    expect(workerEntryFor("file:///pkg/src/graph/worker-pool.ts", parent).execArgv).toEqual([
+      "--require", "/pkg/suppress-warnings.cjs", "--conditions", "node", "-C", "development",
+      "--import=file:///pkg/hook.mjs", "--import", "tsx",
+    ]);
   });
 
   it("does not register tsx twice under the tsx CLI", () => {

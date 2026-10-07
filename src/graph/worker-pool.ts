@@ -121,18 +121,40 @@ function errorResult(message: string): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify({ error: message }) }] };
 }
 
+/** Flags (with their values) a source worker needs: module loaders and resolve conditions. */
+const LOADER_FLAGS = new Set(["--import", "--require", "-r", "--loader", "--experimental-loader", "--conditions", "-C"]);
+
+/**
+ * The loader flags in `execArgv`. Node rejects per-process and V8 flags
+ * (`--max-old-space-size`, `--expose-gc`, `--title`, ...) in an explicit
+ * worker execArgv — new Worker() throws — though it lets a worker inherit them.
+ */
+function loaderFlags(execArgv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < execArgv.length; i++) {
+    const arg = execArgv[i];
+    const eq = arg.indexOf("=");
+    if (!LOADER_FLAGS.has(eq === -1 ? arg : arg.slice(0, eq))) continue;
+    if (eq !== -1) out.push(arg);
+    else if (i + 1 < execArgv.length) out.push(arg, execArgv[++i]);
+  }
+  return out;
+}
+
 /**
  * Worker entry for a pool module at `moduleUrl`. The compiled worker sits
- * next to it in dist/. Under tsx or vitest the module is the .ts source, so
- * the worker is too and needs tsx's loader.
+ * next to it in dist/ and inherits the parent's flags. Under tsx or vitest
+ * the module is the .ts source, so the worker is too and needs tsx's loader,
+ * which means an explicit execArgv.
  */
 export function workerEntryFor(moduleUrl: string, execArgv: string[]): { url: URL; execArgv?: string[] } {
   if (moduleUrl.endsWith(".ts")) {
+    const loaders = loaderFlags(execArgv);
     // The `tsx` CLI passes its loader as .../tsx/dist/{preflight.cjs,loader.mjs}.
-    const hasTsx = execArgv.some((a) => a === "tsx" || /[\\/]tsx[\\/]dist[\\/]/.test(a));
+    const hasTsx = loaders.some((a) => a === "tsx" || /[\\/]tsx[\\/]dist[\\/]/.test(a));
     return {
       url: new URL("./graph-worker.ts", moduleUrl),
-      execArgv: hasTsx ? execArgv : [...execArgv, "--import", "tsx"],
+      execArgv: hasTsx ? loaders : [...loaders, "--import", "tsx"],
     };
   }
   return { url: new URL("./graph-worker.js", moduleUrl) };
@@ -202,7 +224,19 @@ export class GraphWorkerPool {
       return;
     }
     this.clearIdleTimer();
-    const slot = this.slot ?? this.spawn();
+    let slot: Slot;
+    try {
+      slot = this.slot ?? this.spawn();
+    } catch (e) {
+      // new Worker() can throw synchronously (e.g. ERR_WORKER_INVALID_EXEC_ARGV).
+      // pump() also runs from worker listeners and timers, where a throw
+      // would be an uncaught exception in the daemon.
+      next.resolve(errorResult(
+        `graph worker could not start for ${next.job.tool}: ${e instanceof Error ? e.message : String(e)}`,
+      ));
+      this.pump();
+      return;
+    }
     next.slot = slot;
     this.active = next;
     // Hold the process open only while a job is in flight.
