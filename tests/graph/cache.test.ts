@@ -109,6 +109,20 @@ describe("cache: checkFileCache + saveFileCache", () => {
     expect(misses).toHaveLength(1);
   });
 
+  it("saves a file listed twice in one call once, the last content winning", async () => {
+    const { filesDir, manifestPath } = resolveCachePaths(opts());
+    // chiasmus_graph does not dedupe `files`: the same file twice, same content.
+    await saveFileCache(["x", "x"].map((c) => ({ path: "/abs/a.ts", content: c, graph: fragment("/abs/a.ts", c) })), opts());
+    expect(await readdir(filesDir)).toEqual([`${fileHash("x", "/abs/a.ts")}.json`]);
+    // Changed between the two reads.
+    await saveFileCache(["y", "z"].map((c) => ({ path: "/abs/b.ts", content: c, graph: fragment("/abs/b.ts", c) })), opts());
+    const manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
+    expect(manifest.entries["/abs/b.ts"].hash).toBe(fileHash("z", "/abs/b.ts"));
+    expect((await readdir(filesDir)).sort()).toEqual(
+      [`${fileHash("x", "/abs/a.ts")}.json`, `${fileHash("z", "/abs/b.ts")}.json`].sort(),
+    );
+  });
+
   it("misses after schema version bump", async () => {
     await saveFileCache(
       [{ path: "/abs/a.ts", content: "v1", graph: fragment("/abs/a.ts", "a") }],
