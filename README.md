@@ -69,6 +69,35 @@ Add to `opencode.json`:
 }
 ```
 
+### Long-running HTTP daemon
+
+Instead of every client session starting its own `npx chiasmus` stdio process, you can run one Chiasmus process as a Streamable HTTP server and point clients that support URL-based MCP servers at it:
+
+```bash
+chiasmus-http --host 127.0.0.1 --port 3939 --path /mcp   # the defaults
+```
+
+Claude Code:
+
+```bash
+claude mcp add --transport http chiasmus http://127.0.0.1:3939/mcp
+```
+
+Codex (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.chiasmus]
+url = "http://127.0.0.1:3939/mcp"
+```
+
+Options (also read from the environment): `--host` (`CHIASMUS_MCP_HOST`), `--port` (`CHIASMUS_MCP_PORT`), `--path` (`CHIASMUS_MCP_PATH`), `--session-ttl-ms` (`CHIASMUS_MCP_SESSION_TTL_MS`; a session idle this long is closed, default 30 min), `--chiasmus-home` (`CHIASMUS_HOME`), `--allowed-hosts` (`CHIASMUS_MCP_ALLOWED_HOSTS`), `--max-body-bytes` (`CHIASMUS_MCP_MAX_BODY_BYTES`; a larger request body gets a 413, default 10 MiB like the stdio transport) and `--max-sessions` (`CHIASMUS_MCP_MAX_SESSIONS`; an initialize beyond it gets a 503, default 256). `GET /healthz` answers `{"ok":true,"sessions":<open sessions>}`.
+
+All sessions share one skill library, so a template crafted in one is visible to the others. They also share the daemon's graph cache, keyed by the daemon's working directory, and with it one set of `save_snapshot` names, so give snapshots names unique to your work (for example repository, commit and a run id).
+
+The daemon has no authentication, so it answers only requests whose `Host` header, and `Origin` header if they send one, names `localhost`, `127.0.0.1`, `[::1]` or the `--host` address (unless that is `0.0.0.0` or `::`). Anything else gets a 403 before a session starts. This stops a web page from reaching the daemon through DNS rebinding: the page's own hostname is made to resolve to 127.0.0.1, but the browser still sends that hostname. If clients reach the daemon by another name, list it with `--allowed-hosts name1,name2`.
+
+If a solver's WASM module aborts or traps, the daemon logs `fatal <solver> WASM error, exiting so the process is restarted` and exits with code 1 instead of staying up unresponsive. A `chiasmus_graph` or `chiasmus_map` call running at that moment doesn't change this: the daemon kills the graph child process with SIGKILL as it exits, so no graph process outlives it. The exit is immediate: requests in flight get no answer, and their clients see the connection close. Run the daemon under a supervisor that restarts it, such as a systemd unit with `Restart=on-failure`. On SIGTERM or SIGINT it stops accepting requests (a request on a connection already open gets a 503), closes its sessions and connections, kills the graph child process and exits with 143 or 130, at most 5 s after the signal.
+
 ## Tools
 
 **`chiasmus_verify`** — Submit raw SMT-LIB or Prolog, get a verified result. Z3 UNSAT results include an `unsatCore` showing which assertions conflict. Prolog supports `explain=true` for derivation traces showing which rules fired.
