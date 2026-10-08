@@ -348,7 +348,7 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 ### Graph cache
 - `saveFileCache` serializes all manifest read-modify-writes through `proper-lockfile` on `<repoDir>/.lock` — concurrent MCP dispatches don't tear the manifest
 - Per-file writes are atomic via `.tmp` + rename, parallelized with `Promise.all` inside the single lock acquisition
-- Eviction is folded into the save lock block with a manifest-sum fast path: the O(N) `fs.readdir`/`fs.stat` sweep only runs when the manifest-tracked total exceeds the per-repo budget
+- Eviction is folded into the save lock block with a manifest-sum fast path: the O(N) `fs.readdir`/`fs.stat` sweep only runs when the manifest-tracked total exceeds the per-repo budget. The fast path only holds while the manifest lists every entry on disk: a file whose content changed gets a new entry (the hash names it), and its old one is deleted once the new manifest is written
 - LRU uses file `mtime`; `checkFileCache` bumps it via `fs.utimes` on hits (best-effort, concurrent eviction is tolerated by the read path)
 - Snapshot names are validated against `/`, `\`, `..`, `\0` — path traversal rejected at every entry point
 - Cache schema versioned via `CACHE_SCHEMA_VERSION` in the manifest; mismatch silently invalidates all entries rather than throwing

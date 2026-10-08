@@ -263,11 +263,19 @@ export async function saveFileCache(
       await fs.rename(tmp, p.cachePath);
     }));
 
+    // A file whose content changed has a new entry name: its old entry is
+    // listed nowhere once the manifest is written, and the eviction fast
+    // path (the manifest's sizes) would never count it.
+    const superseded: string[] = [];
     for (const p of prepared) {
+      const old = manifest.entries[p.path];
+      if (old && old.hash !== p.hash) superseded.push(join(paths.filesDir, `${old.hash}.json`));
       manifest.entries[p.path] = { hash: p.hash, size: p.size, savedAt: now };
     }
 
     await writeManifest(paths, manifest);
+    // An unlocked reader still holding the old manifest gets a miss.
+    await Promise.all(superseded.map((f) => fs.rm(f, { force: true })));
     await evictIfOverBudget(paths, manifest, budget);
   });
 }
