@@ -144,16 +144,31 @@ async function ensureLockFile(paths: CachePaths): Promise<void> {
   return p;
 }
 
+function emptyManifest(): Manifest {
+  return { schemaVersion: CACHE_SCHEMA_VERSION, entries: {} };
+}
+
 async function readManifest(paths: CachePaths): Promise<Manifest> {
+  return (await loadManifest(paths)) ?? emptyManifest();
+}
+
+/**
+ * The manifest, or undefined when it exists but could not be read (EMFILE,
+ * EACCES, EIO). Missing, unparseable or of another schema version, it is
+ * empty: nothing it listed can be served.
+ */
+async function loadManifest(paths: CachePaths): Promise<Manifest | undefined> {
+  let raw: string;
   try {
-    const raw = await fs.readFile(paths.manifestPath, "utf-8");
+    raw = await fs.readFile(paths.manifestPath, "utf-8");
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? emptyManifest() : undefined;
+  }
+  try {
     const parsed = JSON.parse(raw) as Manifest;
-    if (parsed.schemaVersion !== CACHE_SCHEMA_VERSION) {
-      return { schemaVersion: CACHE_SCHEMA_VERSION, entries: {} };
-    }
-    return parsed;
+    return parsed.schemaVersion === CACHE_SCHEMA_VERSION ? parsed : emptyManifest();
   } catch {
-    return { schemaVersion: CACHE_SCHEMA_VERSION, entries: {} };
+    return emptyManifest();
   }
 }
 
@@ -178,7 +193,8 @@ function writeMarkerPath(paths: CachePaths): string {
  * lock means the previous holder died mid-write, and its leftovers are
  * reclaimed before `fn` runs. Since every `.tmp` writer holds the lock, none
  * of those files belongs to a live writer. A failed `fn` leaves the marker,
- * so whatever it wrote is reclaimed the same way.
+ * so whatever it wrote is reclaimed the same way, and so does a reclaim that
+ * could not finish.
  */
 async function withRepoLock<T>(paths: CachePaths, fn: () => Promise<T>): Promise<T> {
   await ensureLockFile(paths);
@@ -187,10 +203,11 @@ async function withRepoLock<T>(paths: CachePaths, fn: () => Promise<T>): Promise
     stale: 5_000,
   });
   try {
-    if (await markWriteInProgress(paths)) await reclaimAbandonedWrite(paths);
+    const abandoned = await markWriteInProgress(paths);
+    const clean = !abandoned || (await reclaimAbandonedWrite(paths));
     const result = await fn();
     // Left in place, the marker only costs the next writer a directory scan.
-    await fs.unlink(writeMarkerPath(paths)).catch(() => {});
+    if (clean) await fs.unlink(writeMarkerPath(paths)).catch(() => {});
     return result;
   } finally {
     await release();
@@ -212,13 +229,22 @@ async function markWriteInProgress(paths: CachePaths): Promise<boolean> {
  * Remove what a writer that died holding the lock left behind: temp files
  * (per-file entries, the manifest, snapshots) and per-file entries the
  * manifest does not list. Called under the lock, only after such a death.
+ * False when the manifest exists but could not be read: which entries it
+ * lists is then unknown, so only the temp files go, and the next writer
+ * tries again. (Entries the manifest lists but whose file is gone, which a
+ * writer killed mid-eviction leaves, are dropped by the eviction scan.)
  */
-async function reclaimAbandonedWrite(paths: CachePaths): Promise<void> {
-  const manifest = await readManifest(paths);
-  const listed = new Set(Object.values(manifest.entries).map((e) => `${e.hash}.json`));
-  await removeEntries(paths.filesDir, (n) => n.endsWith(".tmp") || (n.endsWith(".json") && !listed.has(n)));
+async function reclaimAbandonedWrite(paths: CachePaths): Promise<boolean> {
   await removeEntries(snapshotsDir(paths), (n) => n.endsWith(".tmp"));
   await fs.rm(paths.manifestPath + ".tmp", { force: true });
+  const manifest = await loadManifest(paths);
+  if (!manifest) {
+    await removeEntries(paths.filesDir, (n) => n.endsWith(".tmp"));
+    return false;
+  }
+  const listed = new Set(Object.values(manifest.entries).map((e) => `${e.hash}.json`));
+  await removeEntries(paths.filesDir, (n) => n.endsWith(".tmp") || (n.endsWith(".json") && !listed.has(n)));
+  return true;
 }
 
 async function removeEntries(dir: string, match: (name: string) => boolean): Promise<void> {
@@ -358,6 +384,16 @@ async function evictIfOverBudget(
   } catch {
     return;
   }
+  // Drop what the manifest lists but is gone (deleted from outside, or by a
+  // writer killed in the loop below before it rewrote the manifest): its
+  // size would keep the fast path over budget, and every save scanning.
+  const present = new Set(names);
+  let changed = false;
+  for (const [filePath, e] of Object.entries(manifest.entries)) {
+    if (present.has(`${e.hash}.json`)) continue;
+    delete manifest.entries[filePath];
+    changed = true;
+  }
   const entries: Array<{ name: string; size: number; mtime: number; path: string }> = [];
   for (const n of names) {
     if (!n.endsWith(".json")) continue;
@@ -369,7 +405,10 @@ async function evictIfOverBudget(
   }
 
   let total = entries.reduce((a, e) => a + e.size, 0);
-  if (total <= budget) return;
+  if (total <= budget) {
+    if (changed) await writeManifest(paths, manifest);
+    return;
+  }
 
   entries.sort((a, b) => a.mtime - b.mtime);
   const hashToFilePath = new Map<string, string>();
@@ -377,7 +416,6 @@ async function evictIfOverBudget(
     hashToFilePath.set(e.hash, filePath);
   }
 
-  let changed = false;
   for (const e of entries) {
     if (total <= budget) break;
     try {
