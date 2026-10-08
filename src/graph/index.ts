@@ -21,8 +21,8 @@ export {
 export type { CacheOptions, CachePaths } from "./cache.js";
 export { detectCommunities, cohesionScore } from "./community.js";
 export type { Community } from "./community.js";
-export { detectHubs, detectBridges, detectSurprisingConnections } from "./insights.js";
-export type { Hub, Bridge, SurprisingConnection } from "./insights.js";
+export { detectHubs, detectBridges, analyzeBridges, detectSurprisingConnections } from "./insights.js";
+export type { Hub, Bridge, BridgeAnalysis, BridgeOptions, BetweennessApproximation, SurprisingConnection } from "./insights.js";
 export { graphDiff } from "./diff.js";
 export type { GraphDiffResult, GraphDiffEdge } from "./diff.js";
 export { detectEntryPoints } from "./entry-points.js";
