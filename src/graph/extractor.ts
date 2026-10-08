@@ -1,4 +1,4 @@
-import { parseSource, parseSourceAsync, getLanguageForFile } from "./parser.js";
+import { parseSource, parseSourceAsync, getLanguageForFile, noteWasmError } from "./parser.js";
 import { walkScheme, walkCommonLisp, resolveCommonLispPackageCalls } from "./extract-sexp.js";
 import { getAdapter } from "./adapter-registry.js";
 import { checkFileCache, saveFileCache, type CacheOptions } from "./cache.js";
@@ -137,9 +137,15 @@ export async function extractGraph(
     toExtract = r.misses;
   }
 
-  const fresh = await Promise.all(
-    toExtract.map(async (file) => ({ path: file.path, content: file.content, graph: await extractFileGraph(file) })),
-  );
+  // One file at a time, so each WASM tree is walked and freed before the
+  // next file parses. WASM-grammar files parse after an await: started
+  // together, they would all be parsed first and every tree would sit in
+  // web-tree-sitter's WASM heap at once. Extraction is CPU-bound on this
+  // thread, so running files concurrently gains nothing.
+  const fresh: Array<{ path: string; content: string; graph: CodeGraph }> = [];
+  for (const file of toExtract) {
+    fresh.push({ path: file.path, content: file.content, graph: await extractFileGraph(file) });
+  }
 
   if (opts.cache && fresh.length > 0) {
     await saveFileCache(
@@ -195,6 +201,17 @@ export async function extractGraph(
 }
 
 async function extractFileGraph(file: { path: string; content: string }): Promise<CodeGraph> {
+  try {
+    return await extractFileGraphUnguarded(file);
+  } catch (e) {
+    // A WASM trap here poisons this process's parser; the graph child reports
+    // the flag with the job's result and is replaced.
+    noteWasmError(e);
+    throw e;
+  }
+}
+
+async function extractFileGraphUnguarded(file: { path: string; content: string }): Promise<CodeGraph> {
   const defines: DefinesFact[] = [];
   const calls: CallsFact[] = [];
   const imports: ImportsFact[] = [];
