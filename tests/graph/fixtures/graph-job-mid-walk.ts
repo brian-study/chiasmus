@@ -5,10 +5,12 @@
 //   close      shuts the graph pool down
 //   hold-busy  prints the graph child's pid and waits to be killed
 //   hold-idle  same, after the small warm-up job only
+//   disconnect closes the busy child's IPC channel, then runs a small job
 // It runs in its own process because the failure it guards against is a C++
 // abort ("terminate called after throwing an instance of 'Napi::Error'") of
 // the whole process, which would take the test runner down with it.
 // Usage: graph-job-mid-walk.ts <mode> <small-file> <big-file>
+import type { ChildProcess } from "node:child_process";
 import { getGraphChildPool, runGraphTool, shutdownGraphChild } from "../../../src/graph/child-pool.js";
 
 const [mode, smallFile, bigFile] = process.argv.slice(2);
@@ -60,6 +62,18 @@ if (mode === "hold-idle") {
     const after = text(await small());
     await shutdownGraphChild();
     report({ cancelled, cancelMs, next, after, busyPid, busyChildGone });
+  } else if (mode === "disconnect") {
+    // Fault injection: close the channel from this side. The child is inside
+    // the walk, so its own 'disconnect' handler can't run, and its watchdog
+    // sees this process alive.
+    const t0 = performance.now();
+    (getGraphChildPool() as unknown as { slot: { child: ChildProcess } }).slot.child.disconnect();
+    const failed = text(await big);
+    const failMs = Math.round(performance.now() - t0);
+    const busyChildGone = !alive(busyPid);
+    const next = text(await small());
+    await shutdownGraphChild();
+    report({ failed, failMs, next, busyPid, busyChildGone });
   } else if (mode === "close") {
     const t0 = performance.now();
     await shutdownGraphChild();

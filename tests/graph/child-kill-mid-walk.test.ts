@@ -184,6 +184,23 @@ describe.skipIf(process.platform === "win32")("stopping a graph job mid-walk", (
     if (report.busyPid !== undefined) expect(alive(report.busyPid)).toBe(false);
   }, 30_000);
 
+  it("a busy child whose IPC channel closed is killed at once, failing only its job", async () => {
+    const r = await start([DRIVER, "disconnect", smallFile, bigFile], graphOnlyEnv()).exited;
+    expect(r.stderr).not.toMatch(ABORT);
+    expect({ code: r.code, signal: r.signal }).toEqual({ code: 0, signal: null });
+    const report = JSON.parse(r.stdout.trim());
+    expect(JSON.parse(report.failed).error).toBe(
+      "graph worker crashed while running chiasmus_map: IPC channel closed (killed by SIGKILL)",
+    );
+    // The walk had seconds left, and the job timeout is 10 min; the bound
+    // only rules out waiting for either.
+    expect(report.failMs).toBeLessThan(5_000);
+    expect(report.busyChildGone).toBe(true);
+    expect(JSON.parse(report.next).result.files).toBe(1);
+    // Replaced once: the killed child's exit is not a second death.
+    expect(r.stderr.match(/graph worker recycled/g)).toHaveLength(1);
+  }, 30_000);
+
   it("SIGTERM to the MCP server exits it cleanly and leaves no graph process behind", async () => {
     const home = join(root, "home");
     await mkdir(home, { recursive: true });

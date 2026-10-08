@@ -11,7 +11,8 @@
  * so a second child would only contend. The child is kept between jobs
  * (grammars stay loaded) and killed, to be started again by the next job,
  * when:
- *   - it crashes or exits (a V8 heap overrun included),
+ *   - it crashes or exits (a V8 heap overrun included), or its IPC channel
+ *     closes,
  *   - it reports a fatal WASM error (web-tree-sitter state is then
  *     undefined),
  *   - a job runs past the job timeout,
@@ -105,7 +106,10 @@ type RecycleReason = "crash" | "fatal-wasm" | "timeout" | "cancelled" | "memory"
 interface Slot {
   child: ChildProcess;
   jobs: number;
+  /** Out of service and SIGKILLed, its loss handled: its exit changes nothing. */
   retired: boolean;
+  /** Its IPC channel closed while in service: SIGKILLed, and its exit is handled as a crash (onDisconnect). */
+  disconnected: boolean;
   exited: Promise<void>;
 }
 
@@ -325,11 +329,13 @@ export class GraphChildPool {
     });
     let markExited!: () => void;
     const exited = new Promise<void>((resolve) => { markExited = resolve; });
-    const slot: Slot = { child, jobs: 0, retired: false, exited };
+    const slot: Slot = { child, jobs: 0, retired: false, disconnected: false, exited };
     child.on("message", (m: GraphResultMessage) => this.onMessage(slot, m));
+    child.on("disconnect", () => this.onDisconnect(slot));
     child.on("exit", (code, signal) => {
       markExited();
-      this.onDeath(slot, signal ? `killed by ${signal}` : `exit code ${code}`);
+      const status = signal ? `killed by ${signal}` : `exit code ${code}`;
+      this.onDeath(slot, slot.disconnected && signal === "SIGKILL" ? `IPC channel closed (${status})` : status);
     });
     // Spawn failures emit 'error' without a following 'exit'.
     child.on("error", (e) => {
@@ -359,6 +365,25 @@ export class GraphChildPool {
     else setRef(slot, false);
     done.resolve(m.result);
     this.pump();
+  }
+
+  /**
+   * The child's IPC channel closed. It closes as a child dies, just before
+   * the 'exit' that says why; in a live child it closes only if either side
+   * disconnects it, and a busy child would not notice that before its current
+   * synchronous step (one tree walk) returns, nor would its watchdog, which
+   * only looks for the parent. Either way no job can reach it and no result
+   * can come back: take it out of service, so the next job forks a fresh
+   * child, and SIGKILL it, so its 'exit' follows at once and onDeath() fails
+   * its job and moves the queue on. A child that was already exiting keeps
+   * its own exit status (a signal sent to an exiting process is dropped), so
+   * a crash is still reported as one. A retired child's channel closes
+   * because the pool killed it: nothing to do.
+   */
+  private onDisconnect(slot: Slot): void {
+    if (slot.retired || slot.disconnected) return;
+    slot.disconnected = true;
+    this.kill(slot);
   }
 
   /** Unplanned loss of a child (crash, exit, failed send). */
@@ -400,7 +425,8 @@ export class GraphChildPool {
 
   private onTimeout(slot: Slot): void {
     const timedOut = this.active;
-    if (slot !== this.slot || !timedOut) return;
+    // The job's child, out of service once its channel closed, until its exit.
+    if (!timedOut || timedOut.slot !== slot) return;
     this.jobTimer = null;
     this.active = null;
     this.retire(slot, "timeout");
@@ -420,10 +446,15 @@ export class GraphChildPool {
   private retire(slot: Slot, reason: RecycleReason, detail?: string): void {
     if (slot.retired) return;
     slot.retired = true;
-    if (this.slot === slot) this.slot = null;
     if (reason !== "idle" && reason !== "shutdown" && reason !== "max-jobs") {
       console.error(`[Chiasmus] graph worker recycled (${reason}${detail ? `: ${detail}` : ""})`);
     }
+    this.kill(slot);
+  }
+
+  /** Out of service, SIGKILLed, and its exit awaited by close(). */
+  private kill(slot: Slot): void {
+    if (this.slot === slot) this.slot = null;
     // Keep the event loop alive until the exit is reaped, so close() can wait for it.
     setRef(slot, true);
     slot.child.kill("SIGKILL");
