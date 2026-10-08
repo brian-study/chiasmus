@@ -363,7 +363,7 @@ web-tree-sitter (all four Lisp grammars) is initialised once per thread: `initWa
 ### Graph cache
 - Every cache write holds `proper-lockfile` on `<repoDir>/.lock` (`withRepoLock`): `saveFileCache`'s manifest read-modify-write and per-file entries, eviction, and `saveSnapshot` — concurrent MCP dispatches don't tear the manifest, and no temp file is written outside the lock
 - Per-file writes are atomic via `.tmp` + rename, parallelized with `Promise.all` inside the single lock acquisition
-- Eviction is folded into the save lock block with a manifest-sum fast path: the O(N) `fs.readdir`/`fs.stat` sweep only runs when the manifest-tracked total exceeds the per-repo budget, or after a writer died mid-write (below)
+- Eviction is folded into the save lock block with a manifest-sum fast path: the O(N) `fs.readdir`/`fs.stat` sweep only runs when the manifest-tracked total exceeds the per-repo budget, or after a writer died mid-write (below). The fast path only holds while the manifest lists every entry on disk: a file whose content changed gets a new entry (the hash names it), and its old one is deleted once the new manifest is written
 - LRU uses file `mtime`; `checkFileCache` bumps it via `fs.utimes` on hits (best-effort, concurrent eviction is tolerated by the read path)
 - Snapshot names are validated against `/`, `\`, `..`, `\0` — path traversal rejected at every entry point
 - Cache schema versioned via `CACHE_SCHEMA_VERSION` in the manifest; mismatch silently invalidates all entries rather than throwing
