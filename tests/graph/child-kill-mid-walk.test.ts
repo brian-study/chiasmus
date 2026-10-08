@@ -23,7 +23,7 @@ interface Proc {
   /** Exit status and all output; waits until every holder of the stdio pipes has closed them. */
   exited: Promise<Exit>;
   /** The process itself has exited (its children may still hold its stdio pipes). */
-  gone: Promise<void>;
+  gone: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   /** Next stdout line that parses as JSON. */
   nextJson(): Promise<any>;
   send(message: unknown): void;
@@ -70,7 +70,9 @@ function start(args: string[], env: NodeJS.ProcessEnv): Proc {
   const exited = new Promise<Exit>((resolve) => {
     child.on("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
-  const gone = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+  const gone = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+    child.on("exit", (code, signal) => resolve({ code, signal }));
+  });
   return {
     pid: child.pid!,
     exited,
@@ -269,6 +271,25 @@ describe.skipIf(process.platform === "win32")("stopping a graph job mid-walk", (
       await parent.gone;
       // The child is inside one long tree walk, with seconds left; it must
       // not run on as an orphan until the walk ends.
+      expect(await waitGone(childPid!, 5_000)).toBe(true);
+    } finally {
+      if (alive(parent.pid)) process.kill(parent.pid, "SIGKILL");
+      if (childPid !== undefined && alive(childPid)) process.kill(childPid, "SIGKILL");
+    }
+  }, 30_000);
+
+  it("process.exit() mid-walk kills the graph process without waiting for its watchdog", async () => {
+    // The fatal solver-error exit is a plain process.exit(1). The busy child
+    // is stopped first, so neither its IPC 'disconnect' handler nor its
+    // watchdog thread can run: only the parent's exit can end it.
+    const parent = start([DRIVER, "exit-busy", smallFile, bigFile], graphOnlyEnv({ STOP_AFTER_MS: "1500" }));
+    let childPid: number | undefined;
+    try {
+      ({ childPid } = await parent.nextJson());
+      await until(() => (busy(childPid!) ? true : undefined), 10_000, "the graph child to be busy");
+      process.kill(childPid!, "SIGSTOP");
+      parent.send("exit");
+      expect(await parent.gone).toEqual({ code: 1, signal: null });
       expect(await waitGone(childPid!, 5_000)).toBe(true);
     } finally {
       if (alive(parent.pid)) process.kill(parent.pid, "SIGKILL");

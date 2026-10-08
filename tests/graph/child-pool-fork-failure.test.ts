@@ -10,13 +10,20 @@ import type { ChildProcess } from "node:child_process";
  * result for the job: pump() also runs from child listeners and timers,
  * where a throw is an uncaught exception that takes the server down.
  */
-const forks = vi.hoisted(() => ({ outOfFds: 0 }));
+const forks = vi.hoisted(() => ({ outOfFds: 0, noExecutable: 0 }));
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     fork: (...args: Parameters<typeof actual.fork>) => {
+      if (forks.noExecutable > 0) {
+        // A real spawn failure (ENOENT): Node returns a connected child with
+        // no pid, emits 'error' and never 'exit'. EACCES and EAGAIN do the same.
+        forks.noExecutable--;
+        const [modulePath, forkArgs, options] = args as [string, readonly string[], object];
+        return actual.fork(modulePath, forkArgs, { ...options, execPath: "/nonexistent/chiasmus-test/node" });
+      }
       if (forks.outOfFds === 0) return actual.fork(...args);
       forks.outOfFds--;
       return outOfFdsChild();
@@ -59,6 +66,7 @@ async function run(pool: InstanceType<typeof GraphChildPool>, args: Record<strin
 
 afterEach(async () => {
   forks.outOfFds = 0;
+  forks.noExecutable = 0;
   await Promise.all(pools.map((p) => p.close()));
   pools = [];
 });
@@ -90,5 +98,22 @@ describe("GraphChildPool when fork() is out of file descriptors", () => {
     await run(pool, { mode: "ok" });
     await pool.close();
     expect(pool.pid).toBeUndefined();
+  });
+});
+
+describe("GraphChildPool when fork() can't start the process", () => {
+  it("resolves the job with an error result, keeps serving and leaves no process 'exit' listener behind", async () => {
+    const listeners = process.listenerCount("exit");
+    const pool = makePool();
+    forks.noExecutable = 1;
+    const r = await run(pool, { mode: "ok" });
+    expect(r.error).toMatch(/^graph worker crashed while running chiasmus_graph: .*ENOENT/);
+    // The kill-on-exit listener of a child that never started must not stay
+    // registered: one per failed graph call would pile up.
+    await vi.waitFor(() => expect(process.listenerCount("exit")).toBe(listeners));
+
+    expect(await run(pool, { mode: "ok" })).toMatchObject({ mode: "ok", jobs: 1 });
+    await pool.close();
+    expect(process.listenerCount("exit")).toBe(listeners);
   });
 });

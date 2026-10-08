@@ -6,6 +6,9 @@
 //   hold-busy  prints the graph child's pid and waits to be killed
 //   hold-idle  same, after the small warm-up job only
 //   disconnect closes the busy child's IPC channel, then runs a small job
+//   exit-busy  prints the graph child's pid, then calls process.exit(1)
+//              (what the fatal solver-error exit does) once a line arrives
+//              on stdin
 // It runs in its own process because the failure it guards against is a C++
 // abort ("terminate called after throwing an instance of 'Napi::Error'") of
 // the whole process, which would take the test runner down with it.
@@ -48,6 +51,9 @@ if (mode === "hold-idle") {
   if (mode === "hold-busy") {
     report({ childPid: busyPid });
     setInterval(() => {}, 60_000);
+  } else if (mode === "exit-busy") {
+    process.stdin.once("data", () => process.exit(1));
+    report({ childPid: busyPid });
   } else if (mode === "cancel") {
     const t0 = performance.now();
     ac.abort();

@@ -21,6 +21,10 @@
  *     grows, and native tree-sitter memory goes back to the OS only when the
  *     process exits),
  *   - it has served maxJobsPerChild jobs, or sits idle past idleTimeoutMs.
+ *
+ * The child never outlives this process: an exit through process.exit()
+ * SIGKILLs it from an 'exit' listener, and the child's watchdog thread
+ * covers a parent that dies without running one (SIGKILL, a native crash).
  */
 
 import { fork, type ChildProcess } from "node:child_process";
@@ -362,6 +366,19 @@ export class GraphChildPool {
       slot.retired = true;
       throw new Error("fork() set up no IPC channel (out of file descriptors: EMFILE/ENFILE)");
     }
+    // The child must not outlive this process. process.exit() (the fatal
+    // solver-error exit, a signal handler's exit) runs 'exit' listeners
+    // synchronously, so the child is killed there: a busy one would not see
+    // the IPC channel close, and would run on until its watchdog noticed the
+    // parent was gone. The listener goes once the child has exited, or has
+    // turned out never to have started: a spawn failure such as ENOENT or
+    // EACCES returns a connected child with no pid that emits 'error' and
+    // never 'exit'.
+    const killOnExit = (): void => {
+      child.kill("SIGKILL");
+    };
+    process.on("exit", killOnExit);
+    void exited.then(() => process.off("exit", killOnExit));
     this.slot = slot;
     return slot;
   }
