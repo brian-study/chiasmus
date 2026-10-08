@@ -5,6 +5,8 @@ import { createServer, type IncomingMessage, type Server as HttpServer } from "n
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createChiasmusServer } from "./mcp-server.js";
+import { exitOnFatalSolverError } from "./solvers/fatal.js";
+import { shutdownGraphChild } from "./graph/child-pool.js";
 import type { Server as McpProtocolServer } from "@modelcontextprotocol/sdk/server/index.js";
 import type { SkillLibrary } from "./skills/library.js";
 
@@ -169,7 +171,17 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     await disposeSession(session);
   };
 
+  // Set once a SIGINT/SIGTERM shutdown begins. The listener is closed then,
+  // but a kept-alive connection can still carry requests; they get a 503, so
+  // no session starts after the shutdown has closed the open ones.
+  let closing = false;
+
   const server = createServer(async (req, res) => {
+    if (closing) {
+      res.setHeader("connection", "close");
+      sendJson(res, 503, jsonRpcError(-32000, "Server is shutting down"));
+      return;
+    }
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? options.host}`);
     if (url.pathname === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
@@ -274,11 +286,31 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     });
   });
 
-  const shutdown = async (): Promise<void> => {
-    for (const sessionId of [...sessions.keys()]) {
-      await closeSession(sessionId);
+  const closeAllSessions = async (): Promise<void> => {
+    while (sessions.size > 0) {
+      for (const sessionId of [...sessions.keys()]) {
+        await closeSession(sessionId);
+      }
     }
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+  };
+
+  const shutdown = async (): Promise<void> => {
+    // Stop taking connections and requests first. Reaping the graph child
+    // below spans event-loop turns, and a session started meanwhile would be
+    // missed here, its GET stream holding server.close() open until its
+    // client went away.
+    closing = true;
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeAllSessions();
+    // Closing the sessions cancels their graph calls, which kills a busy
+    // graph child; this also kills an idle one, waits for it to exit and
+    // refuses graph calls that arrive while the server drains.
+    await shutdownGraphChild();
+    // An initialize already under way when the shutdown began can have
+    // registered its session since.
+    await closeAllSessions();
+    server.closeAllConnections();
+    await closed;
   };
 
   process.once("SIGINT", () => void shutdown().finally(() => process.exit(130)));
@@ -291,6 +323,10 @@ const isMain = process.argv[1]?.endsWith("mcp-http-server.ts")
   || process.argv[1]?.endsWith("mcp-http-server.js");
 
 if (isMain) {
+  // A solver WASM abort would otherwise leave the daemon hung, not dead, so
+  // its supervisor never restarts it. The exit also kills a running graph
+  // job's child process (GraphChildPool's process 'exit' listener).
+  exitOnFatalSolverError();
   try {
     const options = parseHttpOptions();
     await startChiasmusHttpServer(options);

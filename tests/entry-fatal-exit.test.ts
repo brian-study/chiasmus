@@ -1,14 +1,17 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { execFileSync, spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { MAX_FILE_SIZE } from "../src/graph/analyses.js";
 
 // A solver WASM abort used to leave the server process running with a broken
-// solver module, or hung in it. These run the CLI entry as its own process,
+// solver module, or hung in it. These run each CLI entry as its own process,
 // crash a real solver module through an MCP call, and require exit code 1
 // before any answer arrives.
 
@@ -19,6 +22,10 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 // 24 MiB, over the stdio transport's 10 MiB message limit, so the Z3 trap is
 // only covered in process there.
 const PROLOG_TRAP_QUERY = `atom_length('${"a".repeat(4_000_000)}', L).`;
+
+// chiasmus-http reads request bodies itself, with no such limit, so the Z3
+// trap runs through it.
+const Z3_TRAP = `; ${"x".repeat(24 * 1024 * 1024)}\n(declare-const x Int)`;
 
 // Bit-blasting this factoring problem fills Z3's fixed 2 GiB heap on the
 // check's pthread, so Emscripten aborts there ("Cannot enlarge memory
@@ -50,12 +57,31 @@ type Entry = {
   response: (id: number) => Promise<unknown>;
 };
 
-function startEntry(home: string): Entry {
+/**
+ * Entry processes not yet exited. A test that times out never reaches its
+ * own cleanup, and an HTTP entry has nothing else that would ever stop it, so
+ * these are killed after each test, and when this test process exits.
+ * (vitest stops a worker with SIGTERM, which runs no 'exit' listeners, so the
+ * afterEach is what catches a test that timed out.)
+ */
+const running = new Set<ChildProcess>();
+const killRunning = (): void => {
+  for (const child of running) child.kill("SIGKILL");
+};
+process.on("exit", killRunning);
+afterAll(() => {
+  process.off("exit", killRunning);
+});
+afterEach(killRunning);
+
+function startEntry(home: string, entry = "mcp-server.ts", args: string[] = []): Entry {
   // Only PATH and a scratch home: no LLM keys, and no real ~/.chiasmus.
-  const child = spawn(process.execPath, ["--import", "tsx", join("src", "mcp-server.ts")], {
+  const child = spawn(process.execPath, ["--import", "tsx", join("src", entry), ...args], {
     cwd: repoRoot,
     env: { PATH: process.env.PATH ?? "", HOME: home, CHIASMUS_HOME: home },
   });
+  running.add(child);
+  child.once("exit", () => running.delete(child));
   let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {
@@ -172,6 +198,93 @@ describe("CLI entry exits when a solver module crashes", () => {
   );
 });
 
+async function freePort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  const { port } = probe.address() as AddressInfo;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  return port;
+}
+
+async function waitForStderr(entry: Entry, text: string): Promise<void> {
+  while (!entry.stderr().includes(text)) {
+    const exited = await Promise.race([
+      entry.gone.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 50)),
+    ]);
+    if (exited) throw new Error(`entry exited before logging "${text}":\n${entry.stderr()}`);
+  }
+}
+
+type HttpEntry = Entry & {
+  url: URL;
+  /** A connected MCP client; `call` rejects if the process exits first. */
+  call: (name: string, args: Record<string, unknown>) => Promise<unknown>;
+  close: () => Promise<void>;
+};
+
+async function startHttpEntry(home: string): Promise<HttpEntry> {
+  const port = await freePort();
+  const entry = startEntry(
+    home,
+    "mcp-http-server.ts",
+    ["--host", "127.0.0.1", "--port", String(port), "--path", "/mcp", "--chiasmus-home", home],
+  );
+  const url = new URL(`http://127.0.0.1:${port}/mcp`);
+  const client = new Client({ name: "entry-fatal-test", version: "0.0.1" });
+  try {
+    await waitForStderr(entry, "MCP Streamable HTTP server running");
+    await client.connect(new StreamableHTTPClientTransport(url));
+  } catch (e) {
+    await stopEntry(entry);
+    throw e;
+  }
+  return {
+    ...entry,
+    url,
+    call: (name, args) => client.callTool({ name, arguments: args }, undefined, { timeout: 280_000 }),
+    close: () => client.close().catch(() => undefined),
+  };
+}
+
+async function expectHttpEntryToExit(
+  verifyArgs: Record<string, unknown>,
+  solver: string,
+  detail: string,
+): Promise<void> {
+  const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-http-"));
+  const entry = await startHttpEntry(home);
+  try {
+    // A process that survives answers the call; one that exits drops it.
+    const answered = entry
+      .call("chiasmus_verify", verifyArgs)
+      .then(() => ({ answered: true }), () => new Promise<never>(() => undefined));
+    const outcome = await Promise.race([entry.exit.then((code) => ({ exit: code })), answered]);
+
+    expect(outcome).toEqual({ exit: 1 });
+    expect(entry.stderr()).toContain(`fatal ${solver} WASM error, exiting`);
+    expect(entry.stderr()).toContain(detail);
+  } finally {
+    await entry.close();
+    await stopEntry(entry);
+    await rm(home, { recursive: true, force: true });
+  }
+}
+
+describe("chiasmus-http exits when a solver module crashes", () => {
+  it("exits 1 on a Z3 trap", async () => {
+    await expectHttpEntryToExit({ solver: "z3", input: Z3_TRAP }, "z3", "memory access out of bounds");
+  }, 90_000);
+
+  it.runIf(process.env.CHIASMUS_Z3_ABORT_E2E)(
+    "exits 1 when a Z3 check aborts out of memory (CHIASMUS_Z3_ABORT_E2E=1)",
+    async () => {
+      await expectHttpEntryToExit({ solver: "z3", input: Z3_OOM }, "z3", "Aborted(Cannot enlarge memory arrays");
+    },
+    300_000,
+  );
+});
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function alive(pid: number): boolean {
@@ -241,7 +354,7 @@ function hold(pids: number[]): void {
 // 134 and a core dump). In a child process the graph work can't take the
 // server down, but the child must not run on after the server is gone.
 // POSIX only: the checks use ps and signals.
-describe.skipIf(process.platform === "win32")("a solver crash during a graph job", () => {
+describe.skipIf(process.platform === "win32")("a solver crash or SIGTERM during a graph job", () => {
   // One TypeScript file of 90,000 small functions (6.5 MB, under
   // MAX_FILE_SIZE): parsing takes about a second and the tree walk many
   // more, all inside native tree-sitter in the graph child.
@@ -286,19 +399,22 @@ describe.skipIf(process.platform === "win32")("a solver crash during a graph job
     }, 30_000, "the graph child to start the map");
     const survivors: number[] = [];
     let exited: Awaited<Entry["gone"]> | "still running";
+    let exitMs: number | undefined;
     try {
       await sleep(1_000); // past parsing, into the walk
       hold(graphPids);
+      const stoppedAt = Date.now();
       stop();
       exited = await Promise.race([entry.gone, sleep(30_000).then(() => "still running" as const)]);
       if (exited !== "still running") {
+        exitMs = Date.now() - stoppedAt;
         for (const pid of graphPids) if (!(await waitGone(pid, 3_000))) survivors.push(pid);
       }
     } finally {
       for (const pid of graphPids) if (alive(pid)) process.kill(pid, "SIGKILL");
     }
     await stopEntry(entry);
-    return { exited, mapAnswered, graphPids, survivors };
+    return { exited, exitMs, mapAnswered, graphPids, survivors };
   }
 
   it("the stdio entry exits 1 on a Prolog trap and leaves no graph process", async () => {
@@ -319,6 +435,57 @@ describe.skipIf(process.platform === "win32")("a solver crash during a graph job
       expect(run.graphPids.length).toBeGreaterThan(0);
       expect(run.survivors).toEqual([]);
     } finally {
+      await stopEntry(entry);
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("the HTTP entry exits 1 on a Z3 trap and leaves no graph process", async () => {
+    const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-http-graph-"));
+    const entry = await startHttpEntry(home);
+    try {
+      const run = await stopDuringGraphJob(entry, entry, () => {
+        void entry.call("chiasmus_verify", { solver: "z3", input: Z3_TRAP }).catch(() => undefined);
+      });
+
+      const stderr = entry.stderr();
+      expect(stderr).toContain("fatal z3 WASM error, exiting");
+      expect(stderr).not.toMatch(NATIVE_ABORT);
+      expect(run.exited).toEqual({ code: 1, signal: null });
+      expect(run.mapAnswered).toBe(false);
+      expect(run.graphPids.length).toBeGreaterThan(0);
+      expect(run.survivors).toEqual([]);
+    } finally {
+      await entry.close();
+      await stopEntry(entry);
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("the HTTP entry exits 143 on SIGTERM, with clients connecting meanwhile, and leaves no graph process", async () => {
+    const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-http-sigterm-"));
+    const entry = await startHttpEntry(home);
+    // Clients that connect while the daemon shuts down. One that got a
+    // session then would keep the daemon up through its GET stream.
+    const late = Array.from({ length: 5 }, () => new Client({ name: "entry-fatal-test", version: "0.0.1" }));
+    try {
+      const run = await stopDuringGraphJob(entry, entry, () => {
+        entry.child.kill("SIGTERM");
+        late.forEach((client, i) => {
+          setTimeout(() => {
+            client.connect(new StreamableHTTPClientTransport(entry.url)).catch(() => undefined);
+          }, i * 10);
+        });
+      });
+
+      expect(entry.stderr()).not.toMatch(NATIVE_ABORT);
+      expect(run.exited).toEqual({ code: 143, signal: null });
+      expect(run.exitMs).toBeLessThan(5_000);
+      expect(run.graphPids.length).toBeGreaterThan(0);
+      expect(run.survivors).toEqual([]);
+    } finally {
+      await Promise.all(late.map((client) => client.close().catch(() => undefined)));
+      await entry.close();
       await stopEntry(entry);
       await rm(home, { recursive: true, force: true });
     }
