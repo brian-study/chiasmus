@@ -190,9 +190,10 @@ function writeMarkerPath(paths: CachePaths): string {
  * eviction fast path, which sums the manifest's sizes, would never count
  * them). So `fn` runs inside a write-in-progress marker, created before its
  * first write and removed after its last; finding the marker on taking the
- * lock means the previous holder died mid-write, and its leftovers are
+ * lock means the previous holder died mid-write (or stalled past the 5 s
+ * stale window and lost the lock — see AGENTS.md), and its leftovers are
  * reclaimed before `fn` runs. Since every `.tmp` writer holds the lock, none
- * of those files belongs to a live writer. A failed `fn` leaves the marker,
+ * of those files belongs to a live writer, barring that stalled holder. A failed `fn` leaves the marker,
  * so whatever it wrote is reclaimed the same way, and so does a reclaim that
  * could not finish (an unreadable manifest, a directory that could not be
  * listed, an entry that could not be removed).
