@@ -4,12 +4,12 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
-import type { Server as HttpServer } from "node:http";
+import { request, type Server as HttpServer } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseHttpOptions, startChiasmusHttpServer } from "../src/mcp-http-server.js";
+import { allowedHostnames, parseHttpOptions, startChiasmusHttpServer } from "../src/mcp-http-server.js";
 import { SkillLibrary } from "../src/skills/library.js";
 import { GraphChildPool } from "../src/graph/child-pool.js";
 
@@ -22,6 +22,7 @@ describe("Chiasmus Streamable HTTP MCP server", () => {
         "--path", "rpc",
         "--session-ttl-ms", "1000",
         "--chiasmus-home", "/tmp/chiasmus",
+        "--allowed-hosts", "chiasmus.internal, 10.0.0.5",
       ],
       {},
     );
@@ -32,7 +33,15 @@ describe("Chiasmus Streamable HTTP MCP server", () => {
       path: "/rpc",
       sessionTtlMs: 1000,
       chiasmusHome: "/tmp/chiasmus",
+      allowedHosts: ["chiasmus.internal", "10.0.0.5"],
     });
+  });
+
+  it("reads allowed hosts from the environment, and leaves them unset by default", () => {
+    expect(parseHttpOptions([], { CHIASMUS_MCP_ALLOWED_HOSTS: "chiasmus.internal" }).allowedHosts)
+      .toEqual(["chiasmus.internal"]);
+    expect(parseHttpOptions([], {}).allowedHosts).toBeUndefined();
+    expect(() => parseHttpOptions(["--allowed-hosts", " , "], {})).toThrow(/allowed hosts/);
   });
 
   it("serves MCP tools over Streamable HTTP", async () => {
@@ -194,6 +203,147 @@ describe("MCP HTTP session start failures", () => {
     } finally {
       await client.close().catch(() => undefined);
     }
+  });
+});
+
+describe("MCP HTTP Host and Origin checks", () => {
+  const initialize = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: LATEST_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "http-test-client", version: "0.0.1" },
+    },
+  });
+
+  let httpServer: HttpServer | undefined;
+  let chiasmusHome: string | undefined;
+  let port = 0;
+
+  async function start(allowedHosts?: string[]): Promise<void> {
+    chiasmusHome = await mkdtemp(join(tmpdir(), "chiasmus-http-hosts-"));
+    httpServer = await startChiasmusHttpServer({
+      host: "127.0.0.1",
+      port: 0,
+      path: "/mcp",
+      sessionTtlMs: 30_000,
+      chiasmusHome,
+      allowedHosts,
+    });
+    port = (httpServer.address() as AddressInfo).port;
+  }
+
+  /**
+   * Sends one request to the server with exactly these headers. fetch picks
+   * the Host header itself, so a rebound page's request can't be built with it.
+   */
+  function send(path: string, headers: Record<string, string>, body?: string): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = request({
+        host: "127.0.0.1",
+        port,
+        path,
+        method: body === undefined ? "GET" : "POST",
+        headers: body === undefined ? headers : {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          ...headers,
+        },
+        agent: false,
+      }, (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => { text += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: text }));
+      });
+      req.on("error", reject);
+      req.end(body);
+    });
+  }
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    const server = httpServer;
+    httpServer = undefined;
+    if (server) {
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await closed;
+    }
+    if (chiasmusHome) await rm(chiasmusHome, { recursive: true, force: true });
+    chiasmusHome = undefined;
+  });
+
+  it("refuses an initialize sent under another site's hostname, before it starts a session", async () => {
+    // A DNS-rebound page reaches 127.0.0.1, but its browser names the page's
+    // own site in Host.
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const create = vi.spyOn(SkillLibrary, "create");
+    await start();
+
+    const res = await send("/mcp", { host: `rebind.example:${port}` }, initialize);
+
+    expect(res.status).toBe(403);
+    expect(JSON.parse(res.body).error.message).toBe(`Invalid Host header: rebind.example:${port}`);
+    expect(create).not.toHaveBeenCalled();
+    expect((await send("/healthz", { host: `rebind.example:${port}` })).status).toBe(403);
+    expect(JSON.parse((await send("/healthz", { host: `127.0.0.1:${port}` })).body)).toMatchObject({ sessions: 0 });
+  });
+
+  it("refuses a Host that only names a loopback address after credentials", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await start();
+
+    expect((await send("/healthz", { host: `rebind.example@127.0.0.1:${port}` })).status).toBe(403);
+  });
+
+  it("refuses a request from a page on another site, before it starts a session", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const create = vi.spyOn(SkillLibrary, "create");
+    await start();
+    const host = `127.0.0.1:${port}`;
+
+    const other = await send("/mcp", { host, origin: "http://rebind.example" }, initialize);
+    const opaque = await send("/mcp", { host, origin: "null" }, initialize);
+
+    expect(other.status).toBe(403);
+    expect(JSON.parse(other.body).error.message).toBe("Invalid Origin header: http://rebind.example");
+    expect(opaque.status).toBe(403);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("serves the loopback hostnames, and a page served from one", async () => {
+    await start();
+
+    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, `LOCALHOST:${port}`, `[::1]:${port}`]) {
+      expect((await send("/healthz", { host })).status, host).toBe(200);
+    }
+    const res = await send("/mcp", { host: `localhost:${port}`, origin: "http://localhost:6274" }, initialize);
+    expect(res.status).toBe(200);
+  });
+
+  it("serves a hostname given in allowedHosts as well as the loopback ones", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await start(["chiasmus.internal"]);
+
+    expect((await send("/healthz", { host: `chiasmus.internal:${port}` })).status).toBe(200);
+    expect((await send("/healthz", { host: `localhost:${port}` })).status).toBe(200);
+    expect((await send("/healthz", { host: `rebind.example:${port}` })).status).toBe(403);
+  });
+
+  it("allows the bound host's name unless it is a wildcard address", () => {
+    const loopback = ["localhost", "127.0.0.1", "[::1]"];
+    expect([...allowedHostnames({ host: "127.0.0.1" })].sort()).toEqual([...loopback].sort());
+    expect([...allowedHostnames({ host: "::1" })].sort()).toEqual([...loopback].sort());
+    expect([...allowedHostnames({ host: "0.0.0.0" })].sort()).toEqual([...loopback].sort());
+    expect([...allowedHostnames({ host: "::" })].sort()).toEqual([...loopback].sort());
+    expect(allowedHostnames({ host: "192.168.1.5" })).toContain("192.168.1.5");
+    expect(allowedHostnames({ host: "127.0.0.1", allowedHosts: ["Chiasmus.Internal", "fe80::1"] }))
+      .toEqual(new Set([...loopback, "chiasmus.internal", "[fe80::1]"]));
+    expect(() => allowedHostnames({ host: "127.0.0.1", allowedHosts: ["chiasmus.internal:3939"] }))
+      .toThrow(/Invalid allowed host/);
   });
 });
 

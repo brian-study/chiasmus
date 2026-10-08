@@ -55,6 +55,8 @@ url = "http://127.0.0.1:3939/mcp"
 
 This avoids spawning a separate `npx chiasmus` stdio process for every client session.
 
+The daemon has no authentication, so it answers only requests whose `Host` header, and `Origin` header if they send one, names `localhost`, `127.0.0.1`, `[::1]` or the `--host` address (unless that is `0.0.0.0` or `::`). Anything else gets a 403 before a session starts. This stops a web page from reaching the daemon through DNS rebinding: the page's own hostname is made to resolve to 127.0.0.1, but the browser still sends that hostname. If clients reach the daemon by another name, list it with `--allowed-hosts name1,name2` (or `CHIASMUS_MCP_ALLOWED_HOSTS`).
+
 If a solver's WASM module aborts or traps, the daemon logs `fatal <solver> WASM error, exiting so the process is restarted` and exits with code 1 instead of staying up unresponsive. A `chiasmus_graph` or `chiasmus_map` call running at that moment doesn't change this: graph calls run in a child process (unless `CHIASMUS_GRAPH_WORKER=off`), and the daemon kills that process with SIGKILL as it exits, so no graph process outlives it. The exit is immediate: requests in flight, a running graph call included, get no answer, and their clients see the connection close. Run the daemon under a supervisor that restarts it, such as a systemd unit with `Restart=on-failure`. On SIGTERM or SIGINT it stops accepting connections (a request on a connection already open gets a 503), closes its sessions, kills the graph child process and exits with 143 or 130.
 
 ### Crush
