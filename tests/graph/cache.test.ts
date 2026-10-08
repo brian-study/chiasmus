@@ -108,6 +108,34 @@ describe("cache: checkFileCache + saveFileCache", () => {
     expect(misses).toHaveLength(1);
   });
 
+  it("deletes a file's old entry when its content changes, so edits don't grow the cache past what the manifest counts", async () => {
+    const { filesDir, manifestPath } = resolveCachePaths(opts());
+    await saveFileCache([{ path: "/abs/b.ts", content: "b", graph: fragment("/abs/b.ts", "b") }], opts());
+    for (let v = 0; v < 20; v++) {
+      await saveFileCache([{ path: "/abs/a.ts", content: `v${v}`, graph: fragment("/abs/a.ts", `a${v}`) }], opts());
+    }
+    const manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
+    const listed = Object.values(manifest.entries as Record<string, { hash: string }>).map((e) => `${e.hash}.json`);
+    expect((await readdir(filesDir)).sort()).toEqual(listed.sort());
+    expect(listed).toHaveLength(2);
+    const { hits } = await checkFileCache([{ path: "/abs/a.ts", content: "v19" }, { path: "/abs/b.ts", content: "b" }], opts());
+    expect(hits.map((h) => h.graph.defines[0].name)).toEqual(["a19", "b"]);
+  });
+
+  it("saves a file listed twice in one call once, the last content winning", async () => {
+    const { filesDir, manifestPath } = resolveCachePaths(opts());
+    // chiasmus_graph does not dedupe `files`: the same file twice, same content.
+    await saveFileCache(["x", "x"].map((c) => ({ path: "/abs/a.ts", content: c, graph: fragment("/abs/a.ts", c) })), opts());
+    expect(await readdir(filesDir)).toEqual([`${fileHash("x", "/abs/a.ts")}.json`]);
+    // Changed between the two reads.
+    await saveFileCache(["y", "z"].map((c) => ({ path: "/abs/b.ts", content: c, graph: fragment("/abs/b.ts", c) })), opts());
+    const manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
+    expect(manifest.entries["/abs/b.ts"].hash).toBe(fileHash("z", "/abs/b.ts"));
+    expect((await readdir(filesDir)).sort()).toEqual(
+      [`${fileHash("x", "/abs/a.ts")}.json`, `${fileHash("z", "/abs/b.ts")}.json`].sort(),
+    );
+  });
+
   it("misses after schema version bump", async () => {
     await saveFileCache(
       [{ path: "/abs/a.ts", content: "v1", graph: fragment("/abs/a.ts", "a") }],

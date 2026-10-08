@@ -239,7 +239,11 @@ export async function saveFileCache(
     const now = Date.now();
 
     // Prepare serializations synchronously so the hot path's awaits are all I/O.
-    const prepared = items.map((item) => {
+    // One entry per file, the last content winning: chiasmus_graph does not
+    // dedupe its `files`, and two parallel writes of one entry share a temp
+    // name, so the second rename would fail.
+    const latest = [...new Map(items.map((item) => [item.path, item])).values()];
+    const prepared = latest.map((item) => {
       const h = fileHash(item.content, item.path);
       const serialized = JSON.stringify(item.graph);
       return {
@@ -259,11 +263,19 @@ export async function saveFileCache(
       await fs.rename(tmp, p.cachePath);
     }));
 
+    // A file whose content changed has a new entry name: its old entry is
+    // listed nowhere once the manifest is written, and the eviction fast
+    // path (the manifest's sizes) would never count it.
+    const superseded: string[] = [];
     for (const p of prepared) {
+      const old = manifest.entries[p.path];
+      if (old && old.hash !== p.hash) superseded.push(join(paths.filesDir, `${old.hash}.json`));
       manifest.entries[p.path] = { hash: p.hash, size: p.size, savedAt: now };
     }
 
     await writeManifest(paths, manifest);
+    // An unlocked reader still holding the old manifest gets a miss.
+    await Promise.all(superseded.map((f) => fs.rm(f, { force: true })));
     await evictIfOverBudget(paths, manifest, budget);
   });
 }
