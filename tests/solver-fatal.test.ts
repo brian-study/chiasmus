@@ -6,8 +6,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const fake = vi.hoisted(() => ({
   z3: {
     onAbort: undefined as undefined | ((what: unknown) => void),
-    failIn: null as null | "mk_context_rc" | "solver_from_string" | "solver_check",
+    failIn: null as
+      | null
+      | "mk_context_rc"
+      | "solver_from_string"
+      | "solver_check"
+      | "model_eval"
+      | "ast_vector_get",
     failure: "abort" as "abort" | "trap" | "recoverable" | "pthread-abort",
+    checkResult: 0,
     calls: [] as string[],
   },
   prolog: {
@@ -59,8 +66,29 @@ vi.mock("z3-solver", () => {
               setTimeout(() => z3.onAbort?.(OOM), 10);
               return new Promise(() => undefined);
             }
-            return call("solver_check", 0);
+            return call("solver_check", z3.checkResult);
           },
+          // Model and unsat-core extraction: one constant `x`, one core label.
+          solver_get_model: () => call("solver_get_model", 4),
+          model_inc_ref: () => call("model_inc_ref"),
+          model_dec_ref: () => call("model_dec_ref"),
+          model_get_num_consts: () => call("model_get_num_consts", 1),
+          model_get_const_decl: () => call("model_get_const_decl", 5),
+          model_get_num_funcs: () => call("model_get_num_funcs", 0),
+          get_decl_name: () => call("get_decl_name", 6),
+          get_symbol_kind: () => call("get_symbol_kind", 1),
+          get_symbol_string: () => call("get_symbol_string", "x"),
+          get_arity: () => call("get_arity", 0),
+          mk_app: () => call("mk_app", 7),
+          inc_ref: () => call("inc_ref"),
+          dec_ref: () => call("dec_ref"),
+          model_eval: () => call("model_eval", 8),
+          ast_to_string: () => call("ast_to_string", "1"),
+          solver_get_unsat_core: () => call("solver_get_unsat_core", 9),
+          ast_vector_inc_ref: () => call("ast_vector_inc_ref"),
+          ast_vector_dec_ref: () => call("ast_vector_dec_ref"),
+          ast_vector_size: () => call("ast_vector_size", 1),
+          ast_vector_get: () => call("ast_vector_get", 10),
         },
       };
     },
@@ -136,6 +164,7 @@ beforeEach(() => {
   fake.z3.calls = [];
   fake.z3.failIn = null;
   fake.z3.failure = "abort";
+  fake.z3.checkResult = 0;
   fake.prolog.calls = [];
   fake.prolog.failure = "abort";
   fake.prolog.initFails = false;
@@ -258,6 +287,41 @@ describe("Z3 fatal WASM errors", () => {
     expect(queued.status).toBe("error");
     if (queued.status === "error") expect(queued.error).toMatch(/restart/);
     expect(handler).toHaveBeenCalledOnce();
+  });
+
+  for (const [step, checkResult] of [["model_eval", 1], ["ast_vector_get", -1]] as const) {
+    for (const failure of ["trap", "abort"] as const) {
+      it(`makes no call into Z3 after ${failure === "abort" ? "an" : "a"} ${failure} in ${step} during result extraction`, async () => {
+        const { fatal, z3 } = await loadZ3();
+        const handler = vi.fn();
+        fatal.setFatalSolverErrorHandler(handler);
+        fake.z3.checkResult = checkResult;
+        fake.z3.failIn = step;
+        fake.z3.failure = failure;
+
+        const first = await solveZ3(z3);
+        const callsAfterFailure = fake.z3.calls.length;
+        const second = await solveZ3(z3);
+
+        expect(first.status).toBe("error");
+        expect(fake.z3.calls.at(-1)).toBe(step);
+        expect(handler).toHaveBeenCalledOnce();
+        expect(second.status).toBe("error");
+        expect(fake.z3.calls.length).toBe(callsAfterFailure);
+      });
+    }
+  }
+
+  it("still releases references after an ordinary extraction error", async () => {
+    const { z3 } = await loadZ3();
+    fake.z3.checkResult = 1;
+    fake.z3.failIn = "model_eval";
+    fake.z3.failure = "recoverable";
+
+    const result = await solveZ3(z3);
+
+    expect(result).toEqual({ status: "error", error: "Model extraction failed: canceled" });
+    expect(fake.z3.calls.slice(-4)).toEqual(["dec_ref", "model_dec_ref", "solver_dec_ref", "del_context"]);
   });
 
   it("treats an ordinary solver error as recoverable", async () => {

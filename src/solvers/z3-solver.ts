@@ -103,6 +103,13 @@ function throwIfError(Z3: Z3Core, ctx: Z3_context): void {
   }
 }
 
+// Called from a catch, so the module is marked dead before the finally
+// blocks below run: a WASM failure during extraction must not call back into
+// it to release references.
+function markIfFatal(e: unknown): void {
+  if (isFatalWasmError(e)) markFatal(e);
+}
+
 function readUnsatCore(Z3: Z3Core, ctx: Z3_context, solver: Z3_solver): string[] {
   const core = Z3.solver_get_unsat_core(ctx, solver);
   throwIfError(Z3, ctx);
@@ -114,8 +121,11 @@ function readUnsatCore(Z3: Z3Core, ctx: Z3_context, solver: Z3_solver): string[]
       labels.push(Z3.ast_to_string(ctx, Z3.ast_vector_get(ctx, core, i)));
     }
     return labels;
+  } catch (e: unknown) {
+    markIfFatal(e);
+    throw e;
   } finally {
-    Z3.ast_vector_dec_ref(ctx, core);
+    if (!fatalError) Z3.ast_vector_dec_ref(ctx, core);
   }
 }
 
@@ -141,11 +151,17 @@ function evalConstant(
     Z3.inc_ref(ctx, value);
     try {
       return Z3.ast_to_string(ctx, value);
+    } catch (e: unknown) {
+      markIfFatal(e);
+      throw e;
     } finally {
-      Z3.dec_ref(ctx, value);
+      if (!fatalError) Z3.dec_ref(ctx, value);
     }
+  } catch (e: unknown) {
+    markIfFatal(e);
+    throw e;
   } finally {
-    Z3.dec_ref(ctx, app);
+    if (!fatalError) Z3.dec_ref(ctx, app);
   }
 }
 
@@ -170,8 +186,11 @@ function readModel(Z3: Z3Core, ctx: Z3_context, solver: Z3_solver): Record<strin
       assignments[name] = evalConstant(Z3, ctx, model, decl);
     }
     return assignments;
+  } catch (e: unknown) {
+    markIfFatal(e);
+    throw e;
   } finally {
-    Z3.model_dec_ref(ctx, model);
+    if (!fatalError) Z3.model_dec_ref(ctx, model);
   }
 }
 
