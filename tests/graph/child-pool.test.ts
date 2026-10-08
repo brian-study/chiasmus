@@ -124,7 +124,8 @@ describe("GraphChildPool", () => {
     const next = await run(pool, { mode: "ok" });
     expect(next.pid).not.toBe(poisoned.pid);
     expect(next.jobs).toBe(1);
-    expect(alive(poisoned.pid)).toBe(false);
+    // The job resolves before the killed child is reaped; wait for it.
+    await vi.waitFor(() => expect(alive(poisoned.pid)).toBe(false), { timeout: 10_000, interval: 50 });
   });
 
   it("recycles the child after maxJobsPerChild jobs", async () => {
@@ -162,7 +163,8 @@ describe("GraphChildPool", () => {
     expect(hung.error).toBe("chiasmus_graph exceeded 300ms and was aborted; the graph worker was restarted");
     const after = await run(pool, { mode: "ok" });
     expect(after.pid).not.toBe(before.pid);
-    expect(alive(before.pid)).toBe(false);
+    // The job resolves before the killed child is reaped; wait for it.
+    await vi.waitFor(() => expect(alive(before.pid)).toBe(false), { timeout: 10_000, interval: 50 });
   });
 
   it("bounds the queue and rejects excess jobs immediately", async () => {
@@ -208,7 +210,8 @@ describe("GraphChildPool", () => {
     expect(r.error).toBe("chiasmus_graph was cancelled by the client");
     const after = await run(pool, { mode: "ok" });
     expect(after.pid).not.toBe(before.pid);
-    expect(alive(before.pid)).toBe(false);
+    // The job resolves before the killed child is reaped; wait for it.
+    await vi.waitFor(() => expect(alive(before.pid)).toBe(false), { timeout: 10_000, interval: 50 });
   });
 
   it("fails a job it cannot hand to the child as an error result, from run() and from a child listener", async () => {
