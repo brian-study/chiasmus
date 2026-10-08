@@ -272,7 +272,7 @@ ANALYSES:
         },
         save_snapshot: {
           type: "string",
-          description: "If set, save the extracted graph under this snapshot name for later diffing. Requires cache=true.",
+          description: "If set, save the extracted graph under this snapshot name for later diffing. Requires cache=true. Snapshot names are shared by every client of this server, and by servers started in the same working directory: make the name unique to your work (e.g. repository, commit and a run id), or another caller's save can replace it and your diff runs against the wrong graph.",
         },
         include_insights: {
           type: "boolean",
@@ -1034,13 +1034,14 @@ export async function createChiasmusServer(
   chiasmusHome?: string,
   llmOverride?: LLMAdapter | null,
   embeddingOverride?: EmbeddingAdapter | null,
+  libraryOverride?: SkillLibrary,
 ): Promise<{ server: Server; library: SkillLibrary; formalizer: FormalizationEngine | null }> {
   const home = chiasmusHome ?? getChiasmusHome();
   const config = loadConfig(home);
   if (config.adapterDiscovery) {
     await discoverAdapters();
   }
-  const library = await SkillLibrary.create(home);
+  const library = libraryOverride ?? await SkillLibrary.create(home);
 
   // Use override if provided, otherwise try env
   const llm = llmOverride !== undefined ? llmOverride : createLLMFromEnv();
