@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,6 +42,11 @@ function alive(pid: number): boolean {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** The pool's current child process, for fault injection. */
+function currentChild(pool: GraphChildPool): ChildProcess {
+  return (pool as unknown as { slot: { child: ChildProcess } }).slot.child;
+}
 
 afterEach(async () => {
   await Promise.all(pools.map((p) => p.close()));
@@ -118,7 +124,8 @@ describe("GraphChildPool", () => {
     const next = await run(pool, { mode: "ok" });
     expect(next.pid).not.toBe(poisoned.pid);
     expect(next.jobs).toBe(1);
-    expect(alive(poisoned.pid)).toBe(false);
+    // The job resolves before the killed child is reaped; wait for it.
+    await vi.waitFor(() => expect(alive(poisoned.pid)).toBe(false), { timeout: 10_000, interval: 50 });
   });
 
   it("recycles the child after maxJobsPerChild jobs", async () => {
@@ -156,7 +163,8 @@ describe("GraphChildPool", () => {
     expect(hung.error).toBe("chiasmus_graph exceeded 300ms and was aborted; the graph worker was restarted");
     const after = await run(pool, { mode: "ok" });
     expect(after.pid).not.toBe(before.pid);
-    expect(alive(before.pid)).toBe(false);
+    // The job resolves before the killed child is reaped; wait for it.
+    await vi.waitFor(() => expect(alive(before.pid)).toBe(false), { timeout: 10_000, interval: 50 });
   });
 
   it("bounds the queue and rejects excess jobs immediately", async () => {
@@ -202,7 +210,8 @@ describe("GraphChildPool", () => {
     expect(r.error).toBe("chiasmus_graph was cancelled by the client");
     const after = await run(pool, { mode: "ok" });
     expect(after.pid).not.toBe(before.pid);
-    expect(alive(before.pid)).toBe(false);
+    // The job resolves before the killed child is reaped; wait for it.
+    await vi.waitFor(() => expect(alive(before.pid)).toBe(false), { timeout: 10_000, interval: 50 });
   });
 
   it("fails a job it cannot hand to the child as an error result, from run() and from a child listener", async () => {
@@ -272,6 +281,99 @@ describe("GraphChildPool", () => {
       expect(after.pid).not.toBe(before.pid);
       const recycled = errors.mock.calls.filter((c) => String(c[0]).includes("recycled (cancelled)"));
       expect(recycled).toHaveLength(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("fails the job of a busy child whose IPC channel closed at once, kills the child and replaces it once", async () => {
+    // The timeout is what ended the job without a 'disconnect' listener.
+    const pool = makePool({ jobTimeoutMs: 5_000 });
+    const before = await run(pool, { mode: "ok" });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const job = run(pool, { mode: "hang" });
+      await sleep(100);
+      // The child is in a busy loop (in production: one long native tree
+      // walk), so its own 'disconnect' handler can't run, and its watchdog
+      // sees the parent alive.
+      const t0 = performance.now();
+      currentChild(pool).disconnect();
+      const failed = await job;
+      expect(performance.now() - t0).toBeLessThan(2_000);
+      expect(failed.error).toBe("graph worker crashed while running chiasmus_graph: IPC channel closed (killed by SIGKILL)");
+      expect(alive(before.pid)).toBe(false);
+      const next = await run(pool, { mode: "ok" });
+      const again = await run(pool, { mode: "ok" });
+      expect(next).toMatchObject({ mode: "ok", jobs: 1 });
+      expect(next.pid).not.toBe(before.pid);
+      expect(again).toMatchObject({ pid: next.pid, jobs: 2 });
+      // Its exit, after the SIGKILL, does not count as a second death.
+      expect(errors.mock.calls.filter((c) => String(c[0]).includes("recycled"))).toHaveLength(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("takes an idle child whose IPC channel closed out of service before its exit, so the next job gets a fresh one", async () => {
+    const pool = makePool();
+    const before = await run(pool, { mode: "ok" });
+    const child = currentChild(pool);
+    const disconnected = new Promise((r) => child.once("disconnect", r));
+    child.disconnect();
+    await disconnected;
+    // Until the exit is reaped, a job sent to it would fail with "could not send the job".
+    expect(pool.pid).toBeUndefined();
+    const next = await run(pool, { mode: "ok" });
+    expect(next).toMatchObject({ mode: "ok", jobs: 1 });
+    expect(next.pid).not.toBe(before.pid);
+  });
+
+  it.each([
+    ["", 0],
+    [", even when the server's event loop stalls between its 'disconnect' and its 'exit'", 300],
+  ])("reports a busy child killed from outside (the OOM killer, kill -9) by its signal, not as a closed channel%s", async (_, stallMs) => {
+    const pool = makePool({ jobTimeoutMs: 5_000 });
+    await run(pool, { mode: "ok" });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const job = run(pool, { mode: "hang" });
+      await sleep(100);
+      const child = currentChild(pool);
+      // Its channel closes as it dies, just before its 'exit'. Synchronous
+      // work in the server right then (registered after the pool's listener)
+      // holds the 'exit' back past the pool's grace period.
+      if (stallMs) {
+        child.once("disconnect", () => {
+          const end = performance.now() + stallMs;
+          while (performance.now() < end) { /* busy */ }
+        });
+      }
+      process.kill(child.pid!, "SIGKILL");
+      expect((await job).error).toBe("graph worker crashed while running chiasmus_graph: killed by SIGKILL");
+      const recycled = errors.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("recycled"));
+      expect(recycled).toEqual(["[Chiasmus] graph worker recycled (crash: killed by SIGKILL)"]);
+      expect((await run(pool, { mode: "ok" })).jobs).toBe(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("on close, kills a busy child whose IPC channel just closed, logging no crash", async () => {
+    const pool = makePool({ jobTimeoutMs: 5_000 });
+    const { pid } = await run(pool, { mode: "ok" });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const job = run(pool, { mode: "hang" });
+      await sleep(100);
+      const child = currentChild(pool);
+      const disconnected = new Promise((r) => child.once("disconnect", r));
+      child.disconnect();
+      await disconnected;
+      await pool.close();
+      expect(alive(pid)).toBe(false);
+      expect((await job).error).toBe("graph worker is shut down");
+      expect(errors.mock.calls.filter((c) => String(c[0]).includes("recycled"))).toEqual([]);
     } finally {
       errors.mockRestore();
     }

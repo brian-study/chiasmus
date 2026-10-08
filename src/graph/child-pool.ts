@@ -11,7 +11,8 @@
  * so a second child would only contend. The child is kept between jobs
  * (grammars stay loaded) and killed, to be started again by the next job,
  * when:
- *   - it crashes or exits (a V8 heap overrun included),
+ *   - it crashes or exits (a V8 heap overrun included), or its IPC channel
+ *     closes,
  *   - it reports a fatal WASM error (web-tree-sitter state is then
  *     undefined),
  *   - a job runs past the job timeout,
@@ -20,6 +21,10 @@
  *     grows, and native tree-sitter memory goes back to the OS only when the
  *     process exits),
  *   - it has served maxJobsPerChild jobs, or sits idle past idleTimeoutMs.
+ *
+ * The child never outlives this process: an exit through process.exit()
+ * SIGKILLs it from an 'exit' listener, and the child's watchdog thread
+ * covers a parent that dies without running one (SIGKILL, a native crash).
  */
 
 import { fork, type ChildProcess } from "node:child_process";
@@ -100,12 +105,25 @@ const DEFAULTS = {
 /** setTimeout's limit (2^31-1 ms, about 24.8 days): Node turns a longer delay into 1 ms. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
+/**
+ * How long a child whose IPC channel closed gets to exit on its own before it
+ * is SIGKILLed (onDisconnect). A dying child's channel closes just before its
+ * 'exit': at most 0.13 ms apart over 305 crashes, exits and outside SIGKILLs
+ * on Linux, five of them of a child holding a 2.4 GB heap.
+ */
+const DISCONNECT_GRACE_MS = 100;
+
 type RecycleReason = "crash" | "fatal-wasm" | "timeout" | "cancelled" | "memory" | "max-jobs" | "idle" | "shutdown";
 
 interface Slot {
   child: ChildProcess;
   jobs: number;
+  /** Out of service and SIGKILLed, its loss handled: its exit changes nothing. */
   retired: boolean;
+  /** Its IPC channel closed while in service: out of service until it exits, or is killed (onDisconnect). */
+  disconnectTimer?: NodeJS.Timeout;
+  /** Still running when the grace period after its channel closed ran out, and SIGKILLed for it. */
+  disconnected: boolean;
   exited: Promise<void>;
 }
 
@@ -201,6 +219,8 @@ export class GraphChildPool {
   private closed = false;
   /** Exits of killed children not seen yet; close() waits for them. */
   private readonly dying = new Set<Promise<void>>();
+  /** Children out of service since their IPC channel closed, not yet retired (onDisconnect). */
+  private readonly unplugged = new Set<Slot>();
 
   constructor(options: GraphChildPoolOptions = {}) {
     this.opts = {
@@ -264,6 +284,7 @@ export class GraphChildPool {
     this.queue = [];
     for (const p of pending) p.resolve(errorResult("graph worker is shut down"));
     if (this.slot) this.retire(this.slot, "shutdown");
+    for (const slot of this.unplugged) this.retire(slot, "shutdown");
     await Promise.all(this.dying);
   }
 
@@ -325,11 +346,13 @@ export class GraphChildPool {
     });
     let markExited!: () => void;
     const exited = new Promise<void>((resolve) => { markExited = resolve; });
-    const slot: Slot = { child, jobs: 0, retired: false, exited };
+    const slot: Slot = { child, jobs: 0, retired: false, disconnected: false, exited };
     child.on("message", (m: GraphResultMessage) => this.onMessage(slot, m));
+    child.on("disconnect", () => this.onDisconnect(slot));
     child.on("exit", (code, signal) => {
       markExited();
-      this.onDeath(slot, signal ? `killed by ${signal}` : `exit code ${code}`);
+      const status = signal ? `killed by ${signal}` : `exit code ${code}`;
+      this.onDeath(slot, slot.disconnected && signal === "SIGKILL" ? `IPC channel closed (${status})` : status);
     });
     // Spawn failures emit 'error' without a following 'exit'.
     child.on("error", (e) => {
@@ -343,6 +366,19 @@ export class GraphChildPool {
       slot.retired = true;
       throw new Error("fork() set up no IPC channel (out of file descriptors: EMFILE/ENFILE)");
     }
+    // The child must not outlive this process. process.exit() (the fatal
+    // solver-error exit, a signal handler's exit) runs 'exit' listeners
+    // synchronously, so the child is killed there: a busy one would not see
+    // the IPC channel close, and would run on until its watchdog noticed the
+    // parent was gone. The listener goes once the child has exited, or has
+    // turned out never to have started: a spawn failure such as ENOENT or
+    // EACCES returns a connected child with no pid that emits 'error' and
+    // never 'exit'.
+    const killOnExit = (): void => {
+      child.kill("SIGKILL");
+    };
+    process.on("exit", killOnExit);
+    void exited.then(() => process.off("exit", killOnExit));
     this.slot = slot;
     return slot;
   }
@@ -359,6 +395,33 @@ export class GraphChildPool {
     else setRef(slot, false);
     done.resolve(m.result);
     this.pump();
+  }
+
+  /**
+   * The child's IPC channel closed. It closes as a child dies, just before
+   * the 'exit' that says why; in a live child it closes only if either side
+   * disconnects it, and a busy child would not notice that before its current
+   * synchronous step (one tree walk) returns, nor would its watchdog, which
+   * only looks for the parent. Either way no job can reach it and no result
+   * can come back: take it out of service at once, so the next job forks a
+   * fresh child. A dying child's 'exit' follows within the grace period and
+   * goes through onDeath() with its own exit code or signal (a crash, the
+   * OOM killer, kill -9). One still running then is SIGKILLed, and its 'exit'
+   * fails its job as a closed channel. The check waits for one more poll of
+   * the event loop after the timer, so an 'exit' held back by synchronous
+   * work in the server is seen first. A retired child's channel closes
+   * because the pool killed it: nothing to do.
+   */
+  private onDisconnect(slot: Slot): void {
+    if (slot.retired || slot.disconnectTimer) return;
+    this.outOfService(slot);
+    this.unplugged.add(slot);
+    slot.disconnectTimer = setTimeout(() => setImmediate(() => {
+      if (slot.retired) return;
+      slot.disconnected = true;
+      slot.child.kill("SIGKILL");
+    }), DISCONNECT_GRACE_MS);
+    slot.disconnectTimer.unref();
   }
 
   /** Unplanned loss of a child (crash, exit, failed send). */
@@ -400,7 +463,8 @@ export class GraphChildPool {
 
   private onTimeout(slot: Slot): void {
     const timedOut = this.active;
-    if (slot !== this.slot || !timedOut) return;
+    // The job's child, out of service once its channel closed, until its exit.
+    if (!timedOut || timedOut.slot !== slot) return;
     this.jobTimer = null;
     this.active = null;
     this.retire(slot, "timeout");
@@ -420,14 +484,27 @@ export class GraphChildPool {
   private retire(slot: Slot, reason: RecycleReason, detail?: string): void {
     if (slot.retired) return;
     slot.retired = true;
-    if (this.slot === slot) this.slot = null;
     if (reason !== "idle" && reason !== "shutdown" && reason !== "max-jobs") {
       console.error(`[Chiasmus] graph worker recycled (${reason}${detail ? `: ${detail}` : ""})`);
     }
+    this.kill(slot);
+  }
+
+  /** Out of service, SIGKILLed, and its exit awaited by close(). */
+  private kill(slot: Slot): void {
+    this.outOfService(slot);
+    clearTimeout(slot.disconnectTimer);
+    this.unplugged.delete(slot);
+    slot.child.kill("SIGKILL");
+  }
+
+  /** No job goes to it from now on, and close() waits for its exit. */
+  private outOfService(slot: Slot): void {
+    if (this.slot === slot) this.slot = null;
     // Keep the event loop alive until the exit is reaped, so close() can wait for it.
     setRef(slot, true);
-    slot.child.kill("SIGKILL");
     const exited = slot.exited;
+    if (this.dying.has(exited)) return;
     this.dying.add(exited);
     void exited.then(() => this.dying.delete(exited));
   }
