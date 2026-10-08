@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { promises as fsp } from "node:fs";
 import { mkdtemp, rm, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -323,5 +324,52 @@ describe("cache: concurrent access safety", () => {
     const { manifestPath } = resolveCachePaths(opts);
     const manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
     expect(Object.keys(manifest.entries).length).toBe(10);
+  });
+});
+
+describe("cache: a write that died", () => {
+  let cacheDir: string;
+
+  beforeEach(async () => {
+    cacheDir = await mkdtemp(join(tmpdir(), "chiasmus-cache-dead-write-"));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  it("is reclaimed by the next save of any file, and only then is the cache directory listed", async () => {
+    const opts = { cacheDir, repoKey: "dead-write" };
+    const { filesDir, manifestPath } = resolveCachePaths(opts);
+    const realWriteFile = fsp.writeFile;
+    // A full disk cuts the first per-file entry off halfway.
+    let failed = false;
+    vi.spyOn(fsp, "writeFile").mockImplementation(async (path, data, ...rest) => {
+      if (!failed && String(path).startsWith(filesDir)) {
+        failed = true;
+        await realWriteFile(path, String(data).slice(0, 20));
+        throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+      }
+      return realWriteFile(path, data, ...rest);
+    });
+    await expect(saveFileCache(
+      [{ path: "/abs/a.ts", content: "a", graph: fragment("/abs/a.ts", "a") }],
+      opts,
+    )).rejects.toThrow("ENOSPC");
+    expect((await readdir(filesDir)).some((n) => n.endsWith(".tmp"))).toBe(true);
+
+    const readdirSpy = vi.spyOn(fsp, "readdir");
+    await saveFileCache([{ path: "/abs/b.ts", content: "b", graph: fragment("/abs/b.ts", "b") }], opts);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
+    const listed = Object.values(manifest.entries as Record<string, { hash: string }>).map((e) => `${e.hash}.json`);
+    expect((await readdir(filesDir)).sort()).toEqual(listed.sort());
+    expect(listed).toEqual([`${fileHash("b", "/abs/b.ts")}.json`]);
+
+    // A save after a clean one does not list the directory: the eviction
+    // fast path (the manifest's sizes) still decides alone.
+    readdirSpy.mockClear();
+    await saveFileCache([{ path: "/abs/c.ts", content: "c", graph: fragment("/abs/c.ts", "c") }], opts);
+    expect(readdirSpy).not.toHaveBeenCalled();
   });
 });

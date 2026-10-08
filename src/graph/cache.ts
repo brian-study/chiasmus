@@ -4,11 +4,13 @@
  * Layout:
  *   <cacheDir>/<repoKey>/
  *     .lock                 proper-lockfile target
+ *     .write-in-progress    present while a writer holds the lock (see withRepoLock)
  *     manifest.json         { schemaVersion, entries: {absPath: {hash, size, savedAt}} }
  *     files/<hash>.json     one serialized CodeGraph fragment per cached file
  *     snapshots/<name>.json full serialized graph at a point in time
  *
- * All manifest read-modify-write sequences serialize through `withRepoLock`.
+ * Every write goes through `withRepoLock`: manifest read-modify-writes, per-file
+ * entries and snapshots, each written to a `.tmp` name and renamed into place.
  * Readers tolerate a racing eviction by treating a missing file as a miss.
  * LRU is tracked via file mtime: `utimes` bumps the entry on every hit, and
  * eviction sorts oldest-first.
@@ -161,6 +163,23 @@ async function writeManifest(paths: CachePaths, manifest: Manifest): Promise<voi
   await fs.rename(tmp, paths.manifestPath);
 }
 
+function writeMarkerPath(paths: CachePaths): string {
+  return join(paths.repoDir, ".write-in-progress");
+}
+
+/**
+ * Runs `fn` holding the repo lock, the only way anything in the cache is
+ * written. A writer can die mid-write — the graph child is SIGKILLed on
+ * cancellation, timeout and shutdown — leaving a half-written `.tmp`, or
+ * per-file entries renamed into place that the manifest never listed (the
+ * eviction fast path, which sums the manifest's sizes, would never count
+ * them). So `fn` runs inside a write-in-progress marker, created before its
+ * first write and removed after its last; finding the marker on taking the
+ * lock means the previous holder died mid-write, and its leftovers are
+ * reclaimed before `fn` runs. Since every `.tmp` writer holds the lock, none
+ * of those files belongs to a live writer. A failed `fn` leaves the marker,
+ * so whatever it wrote is reclaimed the same way.
+ */
 async function withRepoLock<T>(paths: CachePaths, fn: () => Promise<T>): Promise<T> {
   await ensureLockFile(paths);
   const release = await lockfile.lock(paths.lockPath, {
@@ -168,10 +187,48 @@ async function withRepoLock<T>(paths: CachePaths, fn: () => Promise<T>): Promise
     stale: 5_000,
   });
   try {
-    return await fn();
+    if (await markWriteInProgress(paths)) await reclaimAbandonedWrite(paths);
+    const result = await fn();
+    // Left in place, the marker only costs the next writer a directory scan.
+    await fs.unlink(writeMarkerPath(paths)).catch(() => {});
+    return result;
   } finally {
     await release();
   }
+}
+
+/** Create the write-in-progress marker; true when it was already there. */
+async function markWriteInProgress(paths: CachePaths): Promise<boolean> {
+  try {
+    await (await fs.open(writeMarkerPath(paths), "wx")).close();
+    return false;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return true;
+    throw e;
+  }
+}
+
+/**
+ * Remove what a writer that died holding the lock left behind: temp files
+ * (per-file entries, the manifest, snapshots) and per-file entries the
+ * manifest does not list. Called under the lock, only after such a death.
+ */
+async function reclaimAbandonedWrite(paths: CachePaths): Promise<void> {
+  const manifest = await readManifest(paths);
+  const listed = new Set(Object.values(manifest.entries).map((e) => `${e.hash}.json`));
+  await removeEntries(paths.filesDir, (n) => n.endsWith(".tmp") || (n.endsWith(".json") && !listed.has(n)));
+  await removeEntries(snapshotsDir(paths), (n) => n.endsWith(".tmp"));
+  await fs.rm(paths.manifestPath + ".tmp", { force: true });
+}
+
+async function removeEntries(dir: string, match: (name: string) => boolean): Promise<void> {
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return;
+  }
+  await Promise.all(names.filter(match).map((n) => fs.rm(join(dir, n), { force: true })));
 }
 
 export async function checkFileCache(
@@ -282,7 +339,7 @@ async function evictIfOverBudget(
   for (const e of Object.values(manifest.entries)) manifestTotal += e.size;
   if (manifestTotal <= budget) return;
 
-  // Over budget — scan disk to include any orphans left by a prior crash.
+  // Over budget — scan disk to include any orphans the manifest does not list.
   let names: string[];
   try {
     names = await fs.readdir(paths.filesDir);
@@ -367,10 +424,15 @@ export async function saveSnapshot(
 ): Promise<void> {
   const paths = resolveCachePaths(opts);
   const target = snapshotPath(paths, name);
+  const serialized = JSON.stringify(graph);
   await ensureDir(snapshotsDir(paths));
-  const tmp = target + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(graph));
-  await fs.rename(tmp, target);
+  // Under the repo lock like every cache write (see withRepoLock), so a
+  // temp file left by a writer that died here is reclaimed by the next one.
+  await withRepoLock(paths, async () => {
+    const tmp = target + ".tmp";
+    await fs.writeFile(tmp, serialized);
+    await fs.rename(tmp, target);
+  });
 }
 
 export async function loadSnapshot(
