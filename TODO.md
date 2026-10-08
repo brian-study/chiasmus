@@ -73,10 +73,18 @@ merging fork PRs #3, #6, #4 and #8 into `main` with merge commits, in that order
   the one yogthos/chiasmus#43 changes, so whichever of the two merges second
   needs a one-line rebase; the fork's merge keeps both rows.
 - **[upstream] Graph tools in a child process** → `feat/graph-child-process`,
-  fork PR [#8](https://github.com/brian-study/chiasmus/pull/8), upstream PR #TBD
-  (not filed yet), PENDING. Two commits: shared web-tree-sitter init plus
-  one-file-at-a-time extraction, then `chiasmus_graph`/`chiasmus_map` in one
-  persistent child process (`GraphChildPool`, `graph/child-pool.ts`). A design
+  fork PR [#8](https://github.com/brian-study/chiasmus/pull/8), upstream
+  [yogthos/chiasmus#45](https://github.com/yogthos/chiasmus/pull/45) (branch
+  `feat/graph-child-process-upstream`: #8's tree as shared web-tree-sitter init
+  plus one-file-at-a-time extraction, then one commit for the child process),
+  PENDING. It is stacked on
+  [yogthos/chiasmus#44](https://github.com/yogthos/chiasmus/pull/44) (branch
+  `fix/cache-superseded-entries`, PENDING), which carries two pre-existing cache
+  fixes from #8 on their own: a changed file's old entry is deleted, and a file
+  listed twice in one call is cached once. `chiasmus_graph`/`chiasmus_map` run in
+  one persistent child process (`GraphChildPool`, `graph/child-pool.ts`), which
+  SIGKILLs its child from a process `'exit'` listener, so no `process.exit()`
+  leaves a graph process running. A design
   change upstream may decline; the first commit stands alone. It replaces the
   worker-thread version (fork PR #5, closed): `worker.terminate()` or
   `process.exit()` while the worker thread was inside native tree-sitter aborted
@@ -95,11 +103,11 @@ Fork-only, on `fork/http-daemon-hardening-v2` (replaces fork PR #7, whose branch
   The shutdown stops taking connections and requests (503) before it closes the
   sessions and reaps the child, so no session can start while the child is
   reaped and then hold the daemon up with its GET stream.
-- `GraphChildPool` SIGKILLs each child it forked from a process `'exit'`
-  listener, so no `process.exit()` (the fatal-error exit in both entries
-  included) leaves a graph process running. This is an **[upstream]** follow-up
-  to fork PR #8: fold it into #8's upstream PR when that is filed, or file it
-  after.
+- A real fatal solver error while the graph child walks a 90,000-function file
+  makes both entries exit 1 at once and leaves no graph process
+  (`tests/entry-fatal-exit.test.ts`). The kill comes from #8's process `'exit'`
+  listener; the test needs both #6 and #8, so it lives here until both are
+  upstream.
 
 The fatal-error exit is a plain `process.exit(1)` in both entries, with no exit
 coordinator. The worker-thread design needed one (`exitAfterStoppingGraphWorkers`,
@@ -114,7 +122,7 @@ graph calls do when forced inline (`CHIASMUS_GRAPH_WORKER=off`, or
 runs, so the exit never lands inside a native tree-sitter call: it can't abort,
 and there is nothing to wait for. What was left was the busy child, which does
 not see its IPC channel close and ran on until its watchdog thread noticed the
-parent was gone (up to 500 ms); the exit now kills it.
+parent was gone (up to 500 ms); #8's process `'exit'` listener now kills it.
 `exitAfterStoppingGraphWorkers` was not ported.
 
 The fork carries the four branches unchanged, so re-syncing `main` after they
@@ -122,14 +130,8 @@ merge upstream can conflict only where fork-only lines change their text:
 - `AGENTS.md`: the `mcp-http-server.ts` line in Code Organization, the General
   bullet on `exitOnFatalSolverError`, and the Graph child process bullets "Not a
   worker thread" and "The child never outlives the server".
-- `src/graph/child-pool.ts`: the header paragraph on the child never outliving
-  the process, and the `'exit'` listener at the end of `spawn()`.
 - `tests/entry-fatal-exit.test.ts`: the helpers (`running`, `startEntry`,
   `stdioCaller`) and the chiasmus-http and graph-job describes.
-- `tests/graph/child-kill-mid-walk.test.ts` (`gone`, the `process.exit()` case)
-  and `tests/graph/fixtures/graph-job-mid-walk.ts` (`exit-busy`).
-- `tests/graph/child-pool-fork-failure.test.ts`: the `noExecutable` fork mock and
-  the describe after the out-of-file-descriptors one.
 
 ## Open
 
