@@ -109,6 +109,14 @@ Fork-only, on `fork/http-daemon-hardening-v2` (replaces fork PR #7, whose branch
   listener; the test needs both #6 and #8, so it lives here until both are
   upstream.
 
+Fork-only, on `fix/http-dns-rebinding`: `chiasmus-http` answers a request only
+when its Host header, and its Origin if it sends one, names a loopback hostname,
+the bound host or one in `--allowed-hosts`; anything else gets a 403 before a
+session starts. Before it, a DNS-rebound web page could start a session and call
+any tool (graph extraction on any absolute path, LLM-backed solve/learn/craft).
+The MCP spec requires this check, so it has to be in place before the daemon is
+proposed upstream.
+
 The fatal-error exit is a plain `process.exit(1)` in both entries, with no exit
 coordinator. The worker-thread design needed one (`exitAfterStoppingGraphWorkers`,
 on fork PR #7): `process.exit()` under the worker thread inside native tree-sitter

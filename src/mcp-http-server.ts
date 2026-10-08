@@ -15,12 +15,22 @@ const DEFAULT_PORT = 3939;
 const DEFAULT_PATH = "/mcp";
 const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000;
 
+// A web page can reach a loopback server through DNS rebinding: its own
+// hostname is made to resolve to 127.0.0.1, so the browser connects here but
+// still names the page's site in Host (and Origin). Checking the name the
+// client used, not the address it reached, refuses such a request. The
+// loopback names can't be rebound, so they are always allowed.
+const LOOPBACK_HOSTNAMES = ["localhost", "127.0.0.1", "[::1]"];
+const WILDCARD_HOSTNAMES = new Set(["0.0.0.0", "[::]"]);
+
 type HttpOptions = {
   host: string;
   port: number;
   path: string;
   sessionTtlMs: number;
   chiasmusHome?: string;
+  /** Hostnames clients may use besides the loopback ones and the bound host. */
+  allowedHosts?: string[];
 };
 
 type Session = {
@@ -79,6 +89,64 @@ function parsePositiveInt(value: string | undefined, fallback: number, name: str
   return parsed;
 }
 
+function parseHostList(value: string): string[] {
+  const hosts = value.split(",").map((h) => h.trim()).filter((h) => h !== "");
+  if (hosts.length === 0) throw new Error(`Invalid allowed hosts: ${value}`);
+  return hosts;
+}
+
+/**
+ * The hostname in a Host header value, as URL parses it (lowercase, IPv6
+ * bracketed), or undefined if it isn't a bare host[:port]. URL would read
+ * `rebind.example@127.0.0.1` as host 127.0.0.1, so userinfo and path
+ * characters are refused first.
+ */
+function hostnameOf(authority: string): string | undefined {
+  if (/[@/\\?#\s]/.test(authority)) return undefined;
+  try {
+    return new URL(`http://${authority}`).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+function hostnameOfAllowedHost(host: string): string {
+  const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const hostname = hostnameOf(authority);
+  if (hostname === undefined) throw new Error(`Invalid allowed host: ${host}`);
+  return hostname;
+}
+
+/** The hostnames a request's Host header, and its Origin if it has one, may name. */
+export function allowedHostnames(options: Pick<HttpOptions, "host" | "allowedHosts">): Set<string> {
+  const names = new Set(LOOPBACK_HOSTNAMES);
+  const bound = hostnameOfAllowedHost(options.host);
+  if (!WILDCARD_HOSTNAMES.has(bound)) names.add(bound);
+  for (const host of options.allowedHosts ?? []) names.add(hostnameOfAllowedHost(host));
+  return names;
+}
+
+/** Why the request must be refused, or undefined if its Host and Origin are allowed. */
+function refusal(req: IncomingMessage, allowed: ReadonlySet<string>): string | undefined {
+  const host = req.headers.host;
+  const hostname = host === undefined ? undefined : hostnameOf(host);
+  if (hostname === undefined || !allowed.has(hostname)) {
+    return `Invalid Host header: ${host ?? "(none)"}`;
+  }
+  const origin = req.headers.origin;
+  if (origin === undefined) return undefined;
+  let originHostname: string | undefined;
+  try {
+    originHostname = new URL(origin).hostname;
+  } catch {
+    // An opaque origin ("null": sandboxed frames, file: pages) names no host.
+  }
+  if (originHostname === undefined || !allowed.has(originHostname)) {
+    return `Invalid Origin header: ${origin}`;
+  }
+  return undefined;
+}
+
 export function parseHttpOptions(argv = process.argv.slice(2), env = process.env): HttpOptions {
   const options: HttpOptions = {
     host: env.CHIASMUS_MCP_HOST ?? DEFAULT_HOST,
@@ -91,6 +159,9 @@ export function parseHttpOptions(argv = process.argv.slice(2), env = process.env
     ),
     chiasmusHome: env.CHIASMUS_HOME,
   };
+  if (env.CHIASMUS_MCP_ALLOWED_HOSTS !== undefined) {
+    options.allowedHosts = parseHostList(env.CHIASMUS_MCP_ALLOWED_HOSTS);
+  }
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -110,6 +181,8 @@ export function parseHttpOptions(argv = process.argv.slice(2), env = process.env
       options.chiasmusHome = readValue();
     } else if (arg === "--session-ttl-ms") {
       options.sessionTtlMs = parsePositiveInt(readValue(), options.sessionTtlMs, "session TTL");
+    } else if (arg === "--allowed-hosts") {
+      options.allowedHosts = parseHostList(readValue());
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -122,9 +195,13 @@ export function parseHttpOptions(argv = process.argv.slice(2), env = process.env
 }
 
 function printHelp(): void {
-  console.log(`Usage: chiasmus-http [--host HOST] [--port PORT] [--path PATH] [--session-ttl-ms MS] [--chiasmus-home DIR]
+  console.log(`Usage: chiasmus-http [--host HOST] [--port PORT] [--path PATH] [--session-ttl-ms MS] [--chiasmus-home DIR] [--allowed-hosts HOST,...]
 
 Runs Chiasmus as a long-lived MCP Streamable HTTP server.
+
+Requests are answered only when their Host header, and their Origin header if
+they send one, names localhost, 127.0.0.1, [::1], the --host address (unless it
+is 0.0.0.0 or ::) or a hostname in --allowed-hosts; others get a 403.
 
 Defaults:
   --host ${DEFAULT_HOST}
@@ -136,6 +213,7 @@ Defaults:
 
 export async function startChiasmusHttpServer(options: HttpOptions): Promise<HttpServer> {
   const sessions = new Map<string, Session>();
+  const allowed = allowedHostnames(options);
 
   const refreshSession = (sessionId: string, session: Session): void => {
     clearTimeout(session.idleTimer);
@@ -180,6 +258,13 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     if (closing) {
       res.setHeader("connection", "close");
       sendJson(res, 503, jsonRpcError(-32000, "Server is shutting down"));
+      return;
+    }
+    // Before anything else, so a refused initialize starts no session.
+    const refused = refusal(req, allowed);
+    if (refused) {
+      console.error(`[Chiasmus] refused MCP HTTP request: ${refused}`);
+      sendJson(res, 403, jsonRpcError(-32000, refused));
       return;
     }
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? options.host}`);

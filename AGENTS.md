@@ -34,7 +34,7 @@ Tested on Node 22 and 24. Minimum is Node 22 (better-sqlite3 13 requires it; Nod
 ```
 src/
 ├── mcp-server.ts          # Entry point — MCP server, tool handlers (graph ones in graph/tool-handlers.ts), CLI bootstrap
-├── mcp-http-server.ts     # Fork-only: Streamable HTTP daemon entry (chiasmus-http), one MCP server + SkillLibrary per session
+├── mcp-http-server.ts     # Fork-only: Streamable HTTP daemon entry (chiasmus-http), one MCP server + SkillLibrary per session; 403s a Host/Origin outside the loopback, bound and --allowed-hosts names (DNS rebinding)
 ├── config.ts              # Loads ~/.chiasmus/config.json
 ├── solvers/
 │   ├── types.ts           # SolverType, SolverResult (discriminated union), Solver, SolverInput
