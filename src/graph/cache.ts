@@ -239,7 +239,11 @@ export async function saveFileCache(
     const now = Date.now();
 
     // Prepare serializations synchronously so the hot path's awaits are all I/O.
-    const prepared = items.map((item) => {
+    // One entry per file, the last content winning: chiasmus_graph does not
+    // dedupe its `files`, and two parallel writes of one entry share a temp
+    // name, so the second rename would fail.
+    const latest = [...new Map(items.map((item) => [item.path, item])).values()];
+    const prepared = latest.map((item) => {
       const h = fileHash(item.content, item.path);
       const serialized = JSON.stringify(item.graph);
       return {
