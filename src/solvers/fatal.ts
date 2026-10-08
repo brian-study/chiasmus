@@ -18,7 +18,13 @@ export function setFatalSolverErrorHandler(next: FatalSolverErrorHandler | null)
 }
 
 export function reportFatalSolverError(solver: SolverType, error: Error): void {
-  handler?.(solver, error);
+  // Called from Emscripten's onAbort: a throwing handler must not unwind
+  // through the abort path and skip marking the module dead.
+  try {
+    handler?.(solver, error);
+  } catch (e) {
+    console.error(`[Chiasmus] fatal ${solver} error handler threw: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 // The tsconfig lib has no WebAssembly types; Node always has the global.

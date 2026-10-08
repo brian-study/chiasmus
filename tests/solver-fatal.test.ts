@@ -207,6 +207,25 @@ describe("exitOnFatalSolverError", () => {
 });
 
 describe("Z3 fatal WASM errors", () => {
+  it("still marks the solver dead when the host's handler throws", async () => {
+    const { fatal, z3 } = await loadZ3();
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    fatal.setFatalSolverErrorHandler(() => {
+      throw new Error("handler blew up");
+    });
+    fake.z3.failIn = "mk_context_rc";
+
+    const first = await solveZ3(z3);
+    const callsAfterAbort = fake.z3.calls.length;
+    const second = await solveZ3(z3);
+
+    expect(first).toEqual({ status: "error", error: `Aborted(${OOM})` });
+    expect(second.status).toBe("error");
+    if (second.status === "error") expect(second.error).toMatch(/restart/);
+    expect(fake.z3.calls.length).toBe(callsAfterAbort);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("handler blew up"));
+  });
+
   it("reports an abort while creating the context and never calls into Z3 again", async () => {
     const { fatal, z3 } = await loadZ3();
     const handler = vi.fn();
