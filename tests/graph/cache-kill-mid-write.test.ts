@@ -87,7 +87,7 @@ async function killMidWrite(
 /**
  * Back-date a killed child's lock by a minute, past proper-lockfile's 5 s
  * stale threshold, as if those 5 s had gone by: the next save takes the lock
- * over at once. The first case of the first suite waits the real 5 s.
+ * over at once. Only the first case below waits the real 5 s.
  */
 async function ageLock(lockDir: string): Promise<void> {
   const past = new Date(Date.now() - 60_000);
@@ -101,7 +101,8 @@ async function ageLock(lockDir: string): Promise<void> {
  * is written to a temp name and renamed into place, readers never look at
  * temp names, and the lock goes stale. Each case pauses the real child halfway
  * through one write, kills it through the pool's cancellation path, and runs
- * the same job again.
+ * the same job again. The first case waits for the dead child's lock to go
+ * stale; the other two age it first.
  */
 describe("killing the graph child mid cache write", () => {
   let root: string;
@@ -161,10 +162,10 @@ describe("killing the graph child mid cache write", () => {
     const t0 = performance.now();
     const rerun = text(await pool.run({ tool: "chiasmus_graph", args: { ...args, ...extra } }));
     // proper-lockfile treats a lock as stale 5 s after its holder last
-    // refreshed it, so the rerun waits up to 5 s, plus a fresh child's
-    // start. A lock that never went stale would fail the save once the
-    // retries run out (about 9 s) and the rerun would return an error, not
-    // facts; the bound leaves room for a loaded host.
+    // refreshed it, so the rerun waits up to 5 s (none once the lock is
+    // aged), plus a fresh child's start. A lock that never went stale would
+    // fail the save once the retries run out (about 9 s) and the rerun would
+    // return an error, not facts; the bound leaves room for a loaded host.
     expect(performance.now() - t0).toBeLessThan(20_000);
     expect(factSet(rerun)).toEqual(factSet(expected));
     expect(existsSync(lockDir)).toBe(false);
@@ -192,19 +193,23 @@ describe("killing the graph child mid cache write", () => {
     expect(existsSync(lockDir)).toBe(true);
     expect(isJson(join(repoDir, "manifest.json"))).toBe(true);
     expectNoTornCacheFile();
+    await ageLock(lockDir);
     await expectCleanRerun();
   }, 60_000);
 
   it("while writing a snapshot", async () => {
     const tmp = await killMidWrite(pool, root, `${sep}snapshots${sep}`, { files, analysis: "facts", cache: true, save_snapshot: "base" });
     expect(isJson(tmp)).toBe(false);
+    expect(existsSync(lockDir)).toBe(true);
     expectNoTornCacheFile();
-    // The snapshot was never completed, so it does not exist (rather than being torn)...
+    // The snapshot was never completed, so it does not exist (rather than
+    // being torn)... (Every file is a cache hit: no write, no lock.)
     const diff = JSON.parse(text(await pool.run({
       tool: "chiasmus_graph", args: { files, analysis: "diff", against: "base", cache: true },
     })));
     expect(diff.result.error).toBe("Snapshot 'base' not found. Save one first via saveSnapshot.");
     // ...and saving it again works.
+    await ageLock(lockDir);
     await expectCleanRerun({ save_snapshot: "base" });
     const again = JSON.parse(text(await pool.run({
       tool: "chiasmus_graph", args: { files, analysis: "diff", against: "base", cache: true },
