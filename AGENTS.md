@@ -321,6 +321,10 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 
 ### Z3 Solver
 - Z3 WASM init loads ~30MB — cached in module scope (`z3Promise` singleton)
+- Each solve gets its own low-level Z3 context, deleted before `solve()` returns; solves are serialized
+- Only the low-level API (`z3.Z3.*`) may touch that context — high-level wrappers free objects from a FinalizationRegistry that never frees the context (~8.7 MB per call) and would run after the delete
+- Never share a context across solves: Z3 keeps `:named` labels and `define-fun`s at context level and can add them to later models
+- `z3AllocatedBytes()` reports Z3's live allocation inside the WASM heap, for leak checks
 - Input is sanitized: `(check-sat)`, `(get-model)`, `(set-logic)`, `(exit)` are auto-stripped
 - Use `(assert (! expr :named label))` for readable UNSAT cores
 - Use `(= flag (or ...))` NOT `(=> ... flag)` — implication is trivially SAT
