@@ -33,7 +33,7 @@ Tested on Node 22 and 24. Minimum is Node 22 (better-sqlite3 13 requires it; Nod
 
 ```
 src/
-├── mcp-server.ts          # Entry point — MCP server, all tool handlers, CLI bootstrap
+├── mcp-server.ts          # Entry point — MCP server, tool handlers (graph ones in graph/tool-handlers.ts), CLI bootstrap
 ├── config.ts              # Loads ~/.chiasmus/config.json
 ├── solvers/
 │   ├── types.ts           # SolverType, SolverResult (discriminated union), Solver, SolverInput
@@ -68,6 +68,9 @@ src/
 │   ├── diff.ts            # graphDiff — set diff on nodes + (src,tgt) edge keys
 │   ├── entry-points.ts    # Heuristic entry-point detection (zero-in-degree exports)
 │   ├── cache.ts           # SHA256 per-file cache + LRU eviction + named snapshots (proper-lockfile)
+│   ├── tool-handlers.ts   # chiasmus_graph / chiasmus_map handlers (run in the graph child process)
+│   ├── child-pool.ts      # GraphChildPool — persistent child process, bounded queue, recycling, SIGKILL stops
+│   ├── graph-child.ts     # Child-process entry: runs one job at a time, reports fatal WASM + its own RSS
 │   ├── mermaid.ts         # parseMermaid — Mermaid flowcharts/state diagrams → Prolog facts
 │   ├── type-env.ts        # TS/JS three-tier type inference + class field/method extraction
 │   ├── resolve-calls.ts   # Project-wide QN resolution: inheritance-aware field/method registry
@@ -217,7 +220,7 @@ describe("Z3Solver", () => {
 
 ### `chiasmus_graph` analyses
 
-Defined by `GRAPH_ANALYSES` in `src/mcp-server.ts` and dispatched by `runAnalysis` in `src/graph/analyses.ts`:
+Defined by `GRAPH_ANALYSES` in `src/graph/tool-handlers.ts` and dispatched by `runAnalysis` in `src/graph/analyses.ts`:
 
 | Analysis | Required args | Purpose |
 |---|---|---|
@@ -247,7 +250,7 @@ Cache + snapshot workflow:
 
 ### `chiasmus_map` modes
 
-Returns a compact projection of the tree-sitter graph. Implemented in `src/graph/map.ts`, wired in `handleMap` (`src/mcp-server.ts`). Purpose: hand an LLM a pre-built outline so it doesn't re-read/grep files to learn what's there.
+Returns a compact projection of the tree-sitter graph. Implemented in `src/graph/map.ts`, wired in `handleMap` (`src/graph/tool-handlers.ts`). Purpose: hand an LLM a pre-built outline so it doesn't re-read/grep files to learn what's there.
 
 | Mode | Required args | Output |
 |---|---|---|
@@ -302,6 +305,8 @@ Exports default to every top-level definition, and narrow to the explicit list w
 
 Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for provenance, why Scheme can't use the native bindings, and how to rebuild.
 
+web-tree-sitter (all four Lisp grammars) is initialised once per thread: `initWasm()` and each grammar's `Language.load()` are single-flight promises, since concurrent parses on a cold thread would otherwise each instantiate their own runtime and grammar. `extractGraph` extracts files one at a time, so each WASM tree is walked and freed (`tree.delete()`) before the next file parses; started together, every tree of the batch would sit in the WASM heap at once, and the wasm32 heap tops out at 4 GB.
+
 ### Import resolution
 
 `extractGraph(files, { repoPath })` resolves each `ImportsFact.source` to a repo-relative `resolved` path when possible:
@@ -354,6 +359,16 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 - Template slots use `{{SLOT:name}}` markers in skeleton strings
 - Lint tool (`formalize/validate.ts`) auto-fixes markdown fences, `(check-sat)`, `(get-model)`, `(set-logic)` before reporting errors
 
+### Graph child process
+- `chiasmus_graph` and `chiasmus_map` run in a child process (`runGraphTool` → `GraphChildPool`, a `child_process.fork()` of `graph/graph-child.ts`), so tree-sitter extraction and graph analyses never block the server (other tool calls, pings, cancellation). One child per process, fed by a FIFO queue capped at 32 waiting jobs (beyond that a job gets `{"error":"graph worker queue is full ..."}` immediately). Jobs run one at a time, so a small graph call still waits behind a running large one; only graph calls wait, not the rest of the server.
+- A job is stopped by `SIGKILL` of its child, always: when its MCP request is cancelled (the handler passes `extra.signal`, which the SDK aborts on `notifications/cancelled` and when the transport closes; a job still queued is just dropped), when it runs past the job timeout (10 min, `CHIASMUS_GRAPH_JOB_TIMEOUT_MS`: digits only, capped at 2^31-1 ms because a longer `setTimeout` fires after 1 ms), and on shutdown. No SIGTERM first: a busy child could not run a handler before its current synchronous step (one tree walk, one analysis) returns, and it holds nothing that needs a clean exit (see Graph cache). The next job forks a fresh child. After a cancellation it starts on a later event-loop turn: on transport close the SDK aborts every in-flight request in one synchronous loop, and starting the next queued job at once would fork a child per queued call only for the next abort to kill it.
+- `GraphChildPool` never throws or rejects: `pump()` also runs from child listeners and timers, where a throw is an uncaught exception that ends the server. A child that can't be started (`fork()` throws, or runs out of file descriptors and returns a child with no IPC channel) fails the job with `{"error":"graph worker could not start for <tool>: ..."}`; a job that can't be sent replaces the child and fails with `could not send the job`. No job is retried.
+- Not a worker thread: `worker.terminate()` (or `process.exit()`) while a thread is inside native tree-sitter makes node-addon-api's `Napi::Error` escape and aborts the whole server with SIGABRT, and a single file's tree walk can run for seconds with no point where a thread could stop cooperatively. `tests/graph/child-kill-mid-walk.test.ts` cancels, closes and SIGTERMs mid-walk.
+- The child persists between jobs (grammars stay loaded) and is replaced before the next job when it crashes or exits, reports a fatal WASM error (`isFatalWasmError` in `graph/parser.ts` — web-tree-sitter state is undefined after a trap), reports an RSS over 2 GiB after a job (its own: web-tree-sitter's WASM heap only grows, and native tree-sitter memory goes back to the OS only when the process exits), has served 100 jobs, or idles for 5 min. A lost job comes back as `{"error":"graph worker crashed while running <tool>: ..."}`. `CHIASMUS_GRAPH_WORKER_HEAP_MB` sets the child's `--max-old-space-size` (default: Node's, as for the server); an overrun kills only the child.
+- Each job carries the parent's current working directory and environment, and the child adopts them before running, so `defaultRepoKey()` (a hash of the working directory), `CHIASMUS_CACHE_DIR` and `HOME` resolve as they would inline: the cache and snapshots are shared with inline calls. Adapter discovery runs in the child when `config.adapterDiscovery` is set, and also once the server process has run `discoverAdapters()` itself (`discoveryStarted()`, e.g. a library caller), so the child sees the adapters an inline call would; adapters registered in code with `registerAdapter()` can't be sent to it (`extract()` is a function), so once any is registered (`hasCodeRegisteredAdapters()`) `runGraphTool` runs the tools inline, as `CHIASMUS_GRAPH_WORKER=off` does.
+- From `dist/` the child is `dist/graph/graph-child.js`; from source (tsx, vitest) it is the `.ts` file run with `--import tsx`. Only the parent's loader flags (`--import`/`--require`/`--loader`/`--conditions`) reach the child: `-e` would make it run that code instead, `--inspect` would clash on the port, and the heap limit is its own. The child's stdout goes to the parent's stderr, since the parent's stdout may be the MCP stdio transport.
+- The child never outlives the server. An idle child exits on IPC `disconnect`; a busy one would not see that until its current synchronous step returns, so a watchdog thread in the child checks for the parent every 500 ms and SIGKILLs the child once it is gone. Shutdown (`setupShutdownHandlers`) calls `shutdownGraphChild()`, which kills the child, waits for it to exit and leaves the shared pool closed, so later graph calls get `{"error":"graph worker is shut down"}`.
+
 ### Graph cache
 - `saveFileCache` serializes all manifest read-modify-writes through `proper-lockfile` on `<repoDir>/.lock` — concurrent MCP dispatches don't tear the manifest
 - Per-file writes are atomic via `.tmp` + rename, parallelized with `Promise.all` inside the single lock acquisition
@@ -361,3 +376,4 @@ Grammars are vendored WASM under `grammars/` — see `grammars/README.md` for pr
 - LRU uses file `mtime`; `checkFileCache` bumps it via `fs.utimes` on hits (best-effort, concurrent eviction is tolerated by the read path)
 - Snapshot names are validated against `/`, `\`, `..`, `\0` — path traversal rejected at every entry point
 - Cache schema versioned via `CACHE_SCHEMA_VERSION` in the manifest; mismatch silently invalidates all entries rather than throwing
+- The graph child gets SIGKILLed by design, possibly mid-write and holding the lock. Per-file entries, the manifest and snapshots are all written to a temp name and renamed, and readers never open temp names, so a kill never leaves a torn file; a half-written `.tmp` is overwritten and renamed away the next time that entry is written. A lock the killed child held goes stale 5 s after its last refresh (proper-lockfile `stale`), so the next cached save can wait up to 5 s. `tests/graph/cache-kill-mid-write.test.ts` kills the real child halfway through each kind of write.
