@@ -5,6 +5,8 @@ import { createServer, type IncomingMessage, type Server as HttpServer } from "n
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createChiasmusServer } from "./mcp-server.js";
+import { exitOnFatalSolverError } from "./solvers/fatal.js";
+import { shutdownGraphChild } from "./graph/child-pool.js";
 import type { Server as McpProtocolServer } from "@modelcontextprotocol/sdk/server/index.js";
 import type { SkillLibrary } from "./skills/library.js";
 
@@ -144,10 +146,7 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     session.idleTimer.unref?.();
   };
 
-  const closeSession = async (sessionId: string): Promise<void> => {
-    const session = sessions.get(sessionId);
-    if (!session) return;
-    sessions.delete(sessionId);
+  const disposeSession = async (session: Session): Promise<void> => {
     clearTimeout(session.idleTimer);
     try {
       await session.server.close();
@@ -156,7 +155,33 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     }
   };
 
+  const closeSession = async (sessionId: string): Promise<void> => {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    sessions.delete(sessionId);
+    await disposeSession(session);
+  };
+
+  // A session created for an initialize request that never registered (the
+  // transport rejected the request, or connect or handleRequest threw) has no
+  // session ID to expire or delete, so its server and library close here.
+  const closeUnlessRegistered = async (session: Session): Promise<void> => {
+    const id = session.transport.sessionId;
+    if (id !== undefined && sessions.get(id) === session) return;
+    await disposeSession(session);
+  };
+
+  // Set once a SIGINT/SIGTERM shutdown begins. The listener is closed then,
+  // but a kept-alive connection can still carry requests; they get a 503, so
+  // no session starts after the shutdown has closed the open ones.
+  let closing = false;
+
   const server = createServer(async (req, res) => {
+    if (closing) {
+      res.setHeader("connection", "close");
+      sendJson(res, 503, jsonRpcError(-32000, "Server is shutting down"));
+      return;
+    }
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? options.host}`);
     if (url.pathname === "/healthz") {
       res.writeHead(200, { "content-type": "application/json" });
@@ -170,6 +195,7 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
 
     const sessionId = req.headers["mcp-session-id"];
     const sid = Array.isArray(sessionId) ? sessionId[0] : sessionId;
+    let starting: Session | undefined;
 
     try {
       if (req.method === "POST") {
@@ -198,6 +224,7 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
             library: created.library,
             idleTimer: setTimeout(() => undefined, options.sessionTtlMs),
           };
+          starting = session;
           session.idleTimer.unref?.();
           transport.onclose = () => {
             const transportSessionId = transport.sessionId;
@@ -242,6 +269,12 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
       const code = e instanceof SyntaxError ? -32700 : -32603;
       console.error(`[Chiasmus] MCP HTTP request failed: ${message}`);
       sendJson(res, e instanceof SyntaxError ? 400 : 500, jsonRpcError(code, message));
+    } finally {
+      if (starting) {
+        await closeUnlessRegistered(starting).catch((e) => {
+          console.error(`[Chiasmus] closing unregistered MCP session failed: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }
     }
   });
 
@@ -253,11 +286,31 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Htt
     });
   });
 
-  const shutdown = async (): Promise<void> => {
-    for (const sessionId of [...sessions.keys()]) {
-      await closeSession(sessionId);
+  const closeAllSessions = async (): Promise<void> => {
+    while (sessions.size > 0) {
+      for (const sessionId of [...sessions.keys()]) {
+        await closeSession(sessionId);
+      }
     }
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+  };
+
+  const shutdown = async (): Promise<void> => {
+    // Stop taking connections and requests first. Reaping the graph child
+    // below spans event-loop turns, and a session started meanwhile would be
+    // missed here, its GET stream holding server.close() open until its
+    // client went away.
+    closing = true;
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeAllSessions();
+    // Closing the sessions cancels their graph calls, which kills a busy
+    // graph child; this also kills an idle one, waits for it to exit and
+    // refuses graph calls that arrive while the server drains.
+    await shutdownGraphChild();
+    // An initialize already under way when the shutdown began can have
+    // registered its session since.
+    await closeAllSessions();
+    server.closeAllConnections();
+    await closed;
   };
 
   process.once("SIGINT", () => void shutdown().finally(() => process.exit(130)));
@@ -270,6 +323,10 @@ const isMain = process.argv[1]?.endsWith("mcp-http-server.ts")
   || process.argv[1]?.endsWith("mcp-http-server.js");
 
 if (isMain) {
+  // A solver WASM abort would otherwise leave the daemon hung, not dead, so
+  // its supervisor never restarts it. The exit also kills a running graph
+  // job's child process (GraphChildPool's process 'exit' listener).
+  exitOnFatalSolverError();
   try {
     const options = parseHttpOptions();
     await startChiasmusHttpServer(options);
