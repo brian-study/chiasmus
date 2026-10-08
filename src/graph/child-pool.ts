@@ -28,6 +28,7 @@
  */
 
 import { fork, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { handleGraph, handleMap } from "./tool-handlers.js";
@@ -209,6 +210,7 @@ function setRef(slot: Slot, on: boolean): void {
 export class GraphChildPool {
   private readonly opts: Required<Omit<GraphChildPoolOptions, "entry" | "execArgv" | "heapMb">>;
   private readonly entry: string;
+  private entryExists: boolean | undefined;
   private readonly execArgv: string[];
   private slot: Slot | null = null;
   private queue: Pending[] = [];
@@ -238,6 +240,15 @@ export class GraphChildPool {
       ...(options.execArgv ?? entry.execArgv),
       ...(options.heapMb ? [`--max-old-space-size=${options.heapMb}`] : []),
     ];
+  }
+
+  /**
+   * Whether the child entry exists. A bundler (esbuild, Electron) copies this
+   * module but not graph-child.js beside it; runGraphTool then runs inline.
+   */
+  get entryAvailable(): boolean {
+    this.entryExists ??= existsSync(this.entry);
+    return this.entryExists;
   }
 
   /** PID of the current child process, if one is running. */
@@ -565,7 +576,7 @@ export function getGraphChildPool(): GraphChildPool {
 
 /**
  * Run a graph tool job in the graph child — or inline when the child is
- * disabled, or when adapters were registered in code in this process: the
+ * disabled, when its entry is missing (a bundled build), or when adapters were registered in code in this process: the
  * child has its own registry and cannot load them, so their files would
  * silently drop out of the result. Once this process has run adapter
  * discovery (config.adapterDiscovery, or a library caller's own
@@ -573,7 +584,7 @@ export function getGraphChildPool(): GraphChildPool {
  * it sees the adapters an inline call would.
  */
 export function runGraphTool(job: GraphJob): Promise<CallToolResult> {
-  if (childDisabled() || hasCodeRegisteredAdapters()) {
+  if (childDisabled() || hasCodeRegisteredAdapters() || !getGraphChildPool().entryAvailable) {
     return job.tool === "chiasmus_map" ? handleMap(job.args) : handleGraph(job.args);
   }
   return getGraphChildPool().run({ ...job, discoverAdapters: job.discoverAdapters || discoveryStarted() });

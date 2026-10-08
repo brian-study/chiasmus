@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { fork, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultRepoKey } from "../../src/graph/cache.js";
@@ -69,7 +69,8 @@ describe("graph-child protocol", () => {
   }, 60_000);
 
   it("runs each job in the working directory and environment the parent sent", async () => {
-    root = await mkdtemp(join(tmpdir(), "chiasmus-graph-child-"));
+    // realpath: the child's process.cwd() resolves symlinks (macOS /var → /private/var).
+    root = await realpath(await mkdtemp(join(tmpdir(), "chiasmus-graph-child-")));
     const project = join(root, "project");
     const cacheDir = join(root, "cache");
     await mkdir(project);

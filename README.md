@@ -128,7 +128,7 @@ Reachability-heavy analyses (`cycles`, `reachability`, `path`, `impact`, `dead-c
 
 TS/JS calls also carry qualified-name hints when the receiver's class can be inferred (`CallsFact.calleeQN = "Class.method"`), and imports are resolved through `tsconfig.json` path aliases and the batch's file layout (`ImportsFact.resolved = "<repo-relative path>"`). Both surface as additive Prolog facts — `calls_qn/3` and `imports_resolved/3` — so back-compat queries over `calls/2` and `imports/3` keep working.
 
-`chiasmus_graph` and `chiasmus_map` run in a child process of the server, one call at a time (up to 32 more wait in a queue), so a large extraction never stalls the server's other tools. Cancelling a call, or a call running past `CHIASMUS_GRAPH_JOB_TIMEOUT_MS`, kills that process; the next graph call starts a fresh one. Set `CHIASMUS_GRAPH_WORKER=off` to run them inside the server process instead. They also run there once a language adapter has been registered in code with `registerAdapter()`, since such an adapter can't be handed to another process.
+`chiasmus_graph` and `chiasmus_map` run in a child process of the server, one call at a time (up to 32 more wait in a queue), so a large extraction never stalls the server's other tools. Cancelling a call, or a call running past `CHIASMUS_GRAPH_JOB_TIMEOUT_MS`, kills that process; the next graph call starts a fresh one. Set `CHIASMUS_GRAPH_WORKER=off` to run them inside the server process instead. They also run there once a language adapter has been registered in code with `registerAdapter()`, since such an adapter can't be handed to another process, and when `graph-child.js` isn't next to the pool module (a bundled build).
 
 ### Persistent cache and PR diff
 

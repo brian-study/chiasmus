@@ -483,6 +483,13 @@ describe("childEntryFor", () => {
   });
 });
 
+describe("entryAvailable", () => {
+  it("is true only when the child entry exists on disk", () => {
+    expect(makePool().entryAvailable).toBe(true);
+    expect(makePool({ entry: "/nonexistent/graph-child.js" }).entryAvailable).toBe(false);
+  });
+});
+
 describe("runGraphTool", () => {
   it("has the child discover adapters once this process has run discovery, whatever the job's flag", async () => {
     const poolRun = vi.spyOn(GraphChildPool.prototype, "run").mockResolvedValue({ content: [] });
@@ -497,6 +504,20 @@ describe("runGraphTool", () => {
     } finally {
       poolRun.mockRestore();
       clearAdapters();
+    }
+  });
+
+  it("runs inline when the child entry is missing, as in a bundled build", async () => {
+    const available = vi.spyOn(GraphChildPool.prototype, "entryAvailable", "get").mockReturnValue(false);
+    const poolRun = vi.spyOn(GraphChildPool.prototype, "run");
+    try {
+      const r = await runGraphTool({ tool: "chiasmus_graph", args: { files: [], analysis: "nope" } });
+      const text = (r.content as Array<{ text: string }>)[0].text;
+      expect(JSON.parse(text).error).toMatch(/^Unknown analysis: nope/);
+      expect(poolRun).not.toHaveBeenCalled();
+    } finally {
+      available.mockRestore();
+      poolRun.mockRestore();
     }
   });
 
