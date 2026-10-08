@@ -326,6 +326,56 @@ describe("GraphChildPool", () => {
     expect(next.pid).not.toBe(before.pid);
   });
 
+  it.each([
+    ["", 0],
+    [", even when the server's event loop stalls between its 'disconnect' and its 'exit'", 300],
+  ])("reports a busy child killed from outside (the OOM killer, kill -9) by its signal, not as a closed channel%s", async (_, stallMs) => {
+    const pool = makePool({ jobTimeoutMs: 5_000 });
+    await run(pool, { mode: "ok" });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const job = run(pool, { mode: "hang" });
+      await sleep(100);
+      const child = currentChild(pool);
+      // Its channel closes as it dies, just before its 'exit'. Synchronous
+      // work in the server right then (registered after the pool's listener)
+      // holds the 'exit' back past the pool's grace period.
+      if (stallMs) {
+        child.once("disconnect", () => {
+          const end = performance.now() + stallMs;
+          while (performance.now() < end) { /* busy */ }
+        });
+      }
+      process.kill(child.pid!, "SIGKILL");
+      expect((await job).error).toBe("graph worker crashed while running chiasmus_graph: killed by SIGKILL");
+      const recycled = errors.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("recycled"));
+      expect(recycled).toEqual(["[Chiasmus] graph worker recycled (crash: killed by SIGKILL)"]);
+      expect((await run(pool, { mode: "ok" })).jobs).toBe(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("on close, kills a busy child whose IPC channel just closed, logging no crash", async () => {
+    const pool = makePool({ jobTimeoutMs: 5_000 });
+    const { pid } = await run(pool, { mode: "ok" });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const job = run(pool, { mode: "hang" });
+      await sleep(100);
+      const child = currentChild(pool);
+      const disconnected = new Promise((r) => child.once("disconnect", r));
+      child.disconnect();
+      await disconnected;
+      await pool.close();
+      expect(alive(pid)).toBe(false);
+      expect((await job).error).toBe("graph worker is shut down");
+      expect(errors.mock.calls.filter((c) => String(c[0]).includes("recycled"))).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it("caps a job timeout too large for setTimeout instead of letting it fire at once", async () => {
     // Over 2^31-1 ms, Node clamps a timer to 1 ms.
     const pool = makePool({ jobTimeoutMs: 99_999_999_999 });
