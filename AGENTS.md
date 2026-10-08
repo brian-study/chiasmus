@@ -350,7 +350,7 @@ web-tree-sitter (all four Lisp grammars) is initialised once per thread: `initWa
 - An Emscripten abort or WASM trap leaves a solver module unusable, and the next call into it can block the event loop forever. Z3 and Prolog then stop calling into it, report the error through `reportFatalSolverError`, and answer later solves with an error
 - Detect these with `isFatalWasmError` (`solvers/fatal.ts`): both throw `WebAssembly.RuntimeError`. Never match on message text — solver errors quote user input
 - Catch blocks around WASM module calls in `z3-solver.ts` / `prolog-solver.ts` must start with `rethrowIfFatal(e)`, so the error reaches the code that marks the module fatal (`markFatal`)
-- The CLI entry calls `exitOnFatalSolverError()` (log + `process.exit(1)`) so it gets restarted; the library never calls `process.exit`, and hosts can install their own handler with `setFatalSolverErrorHandler()`
+- The CLI entry calls `exitOnFatalSolverError()` (log + `process.exit(1)`) so it gets restarted; the exit is immediate, a running graph job included (its child process is killed by the exit, see Graph child process). The library never calls `process.exit`, and hosts can install their own handler with `setFatalSolverErrorHandler()`
 - `SolverSession.create()` is async (Z3 init) — always `await` it
 - `SkillLibrary.create()` is async (SQLite init) — always `await` it
 - Correction loop delegates to `repl-sandbox` package's generic `correctionLoop`
