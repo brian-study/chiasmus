@@ -436,6 +436,8 @@ try {
 }
 ```
 
+After a WASM abort or trap a solver module is unusable, and every later solve on it returns an error. A long-lived host should call `exitOnFatalSolverError()` (log and exit 1, so a supervisor restarts it) or pass its own handler to `setFatalSolverErrorHandler()`.
+
 ### Graph Analysis
 
 ```ts
@@ -477,7 +479,7 @@ library.close();
 | Subpath | Exports |
 |---------|---------|
 | `chiasmus` | All public APIs (barrel export) |
-| `chiasmus/solvers` | `SolverSession`, `createZ3Solver`, `createPrologSolver`, `correctionLoop`, solver types |
+| `chiasmus/solvers` | `SolverSession`, `createZ3Solver`, `createPrologSolver`, `correctionLoop`, `setFatalSolverErrorHandler`, `exitOnFatalSolverError`, `isFatalWasmError`, solver types |
 | `chiasmus/graph` | `extractGraph`, `runAnalysis`, `runAnalysisFromGraph`, `buildFactsResult`, `graphToProlog`, `parseMermaid`, `detectCommunities`, `detectHubs`, `detectBridges`, `detectSurprisingConnections`, `detectEntryPoints`, `graphDiff`, `saveSnapshot`/`loadSnapshot`/`listSnapshots`, cache APIs, adapter registry, graph types |
 | `chiasmus/formalize` | `lintSpec`, `classifyFeedback`, `extractPrologQuery`, `FormalizationEngine`, result types |
 | `chiasmus/skills` | `SkillLibrary`, `SkillLearner`, `craftTemplate`, `validateTemplate`, skill types |
