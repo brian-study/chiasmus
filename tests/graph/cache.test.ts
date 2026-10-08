@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, promises as fsp } from "node:fs";
-import { mkdtemp, rm, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -434,6 +434,45 @@ describe("cache: a write that died", () => {
     expect(after.onDisk).toEqual(after.listed);
     expect(after.listed).toHaveLength(4);
     expect(existsSync(marker)).toBe(false);
+  });
+
+  it.each([
+    ["per-file entries", (repoDir: string) => join(repoDir, "files")],
+    ["snapshots", (repoDir: string) => join(repoDir, "snapshots")],
+  ])("keeps the marker when a reclaim can't list the %s directory, and the next save finishes the reclaim", async (_, dirOf) => {
+    const opts = { cacheDir, repoKey: "unlistable-dir" };
+    const { repoDir, filesDir } = resolveCachePaths(opts);
+    const marker = join(repoDir, ".write-in-progress");
+    const snapshots = join(repoDir, "snapshots");
+    await saveFileCache([small("a")], opts);
+    // A dead writer's leftovers: its marker and a temp file in each directory.
+    await writeFile(marker, "");
+    await writeFile(join(filesDir, "dead.json.tmp"), "{\"defi");
+    await mkdir(snapshots, { recursive: true });
+    await writeFile(join(snapshots, "dead.json.tmp"), "{\"nod");
+    const target = dirOf(repoDir);
+    const realReaddir = fsp.readdir;
+    let failed = false;
+    vi.spyOn(fsp, "readdir").mockImplementation((async (path: string, ...rest: unknown[]) => {
+      if (!failed && String(path) === target) {
+        failed = true;
+        throw Object.assign(new Error(`EIO: i/o error, scandir '${target}'`), { code: "EIO" });
+      }
+      return (realReaddir as (...a: unknown[]) => Promise<unknown>)(path, ...rest);
+    }) as typeof fsp.readdir);
+
+    await saveFileCache([small("b")], opts);
+
+    expect(failed).toBe(true);
+    expect(existsSync(marker)).toBe(true);
+    expect(existsSync(join(target, "dead.json.tmp"))).toBe(true);
+
+    vi.restoreAllMocks();
+    await saveFileCache([small("c")], opts);
+
+    expect(existsSync(marker)).toBe(false);
+    expect((await readdir(filesDir)).filter((n) => n.endsWith(".tmp"))).toEqual([]);
+    expect((await readdir(snapshots)).filter((n) => n.endsWith(".tmp"))).toEqual([]);
   });
 
   it("is reclaimed by the next save of any file, and only then is the cache directory listed", async () => {

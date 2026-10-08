@@ -194,7 +194,8 @@ function writeMarkerPath(paths: CachePaths): string {
  * reclaimed before `fn` runs. Since every `.tmp` writer holds the lock, none
  * of those files belongs to a live writer. A failed `fn` leaves the marker,
  * so whatever it wrote is reclaimed the same way, and so does a reclaim that
- * could not finish.
+ * could not finish (an unreadable manifest, a directory that could not be
+ * listed, an entry that could not be removed).
  */
 async function withRepoLock<T>(paths: CachePaths, fn: () => Promise<T>): Promise<T> {
   await ensureLockFile(paths);
@@ -229,32 +230,42 @@ async function markWriteInProgress(paths: CachePaths): Promise<boolean> {
  * Remove what a writer that died holding the lock left behind: temp files
  * (per-file entries, the manifest, snapshots) and per-file entries the
  * manifest does not list. Called under the lock, only after such a death.
- * False when the manifest exists but could not be read: which entries it
- * lists is then unknown, so only the temp files go, and the next writer
- * tries again. (Entries the manifest lists but whose file is gone, which a
- * writer killed mid-eviction leaves, are dropped by the eviction scan.)
+ * False when it could not finish, so the marker stays and the next writer
+ * tries again: the manifest exists but could not be read (which entries it
+ * lists is then unknown, so only the temp files go), or a directory could
+ * not be listed, or an entry could not be removed. (Entries the manifest
+ * lists but whose file is gone, which a writer killed mid-eviction leaves,
+ * are dropped by the eviction scan.)
  */
 async function reclaimAbandonedWrite(paths: CachePaths): Promise<boolean> {
-  await removeEntries(snapshotsDir(paths), (n) => n.endsWith(".tmp"));
-  await fs.rm(paths.manifestPath + ".tmp", { force: true });
+  const snapshotsClean = await removeEntries(snapshotsDir(paths), (n) => n.endsWith(".tmp"));
+  const manifestTmpClean = await fs.rm(paths.manifestPath + ".tmp", { force: true }).then(() => true, () => false);
   const manifest = await loadManifest(paths);
   if (!manifest) {
     await removeEntries(paths.filesDir, (n) => n.endsWith(".tmp"));
     return false;
   }
   const listed = new Set(Object.values(manifest.entries).map((e) => `${e.hash}.json`));
-  await removeEntries(paths.filesDir, (n) => n.endsWith(".tmp") || (n.endsWith(".json") && !listed.has(n)));
-  return true;
+  const filesClean = await removeEntries(
+    paths.filesDir,
+    (n) => n.endsWith(".tmp") || (n.endsWith(".json") && !listed.has(n)),
+  );
+  return snapshotsClean && manifestTmpClean && filesClean;
 }
 
-async function removeEntries(dir: string, match: (name: string) => boolean): Promise<void> {
+/**
+ * Remove the entries of `dir` that `match`. False when they could not all be
+ * listed and removed; a missing directory has nothing to remove.
+ */
+async function removeEntries(dir: string, match: (name: string) => boolean): Promise<boolean> {
   let names: string[];
   try {
     names = await fs.readdir(dir);
-  } catch {
-    return;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT";
   }
-  await Promise.all(names.filter(match).map((n) => fs.rm(join(dir, n), { force: true })));
+  const removed = await Promise.allSettled(names.filter(match).map((n) => fs.rm(join(dir, n), { force: true })));
+  return removed.every((r) => r.status === "fulfilled");
 }
 
 export async function checkFileCache(
