@@ -24,13 +24,24 @@ export interface Solver {
    * For Z3: input is SMT-LIB format.
    * For Prolog: input is { program, query }.
    */
-  solve(input: SolverInput): Promise<SolverResult>;
+  solve(input: SolverInput, options?: SolveOptions): Promise<SolverResult>;
 
   /** Execute several Prolog goals against one consulted program. */
-  solveBatch?(input: PrologBatchInput): Promise<SolverResult[]>;
+  solveBatch?(input: PrologBatchInput, options?: SolveOptions): Promise<SolverResult[]>;
 
   /** Clean up any resources held by this solver instance */
   dispose(): void;
+}
+
+/** Per-call options of Solver.solve and solveBatch. */
+export interface SolveOptions {
+  /**
+   * Aborting it stops the solve: dropped if still queued, its child process
+   * killed if running. Only solvers that run in a child process
+   * (createChildSolver, what SolverSession uses) can stop a running solve;
+   * the in-process ones ignore it.
+   */
+  signal?: AbortSignal;
 }
 
 /** Input to a solver */

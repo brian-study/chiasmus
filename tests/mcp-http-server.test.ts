@@ -22,6 +22,7 @@ import {
 } from "../src/mcp-http-server.js";
 import { SkillLibrary } from "../src/skills/library.js";
 import { GraphChildPool } from "../src/graph/child-pool.js";
+import { SolverChildPool } from "../src/solvers/child-pool.js";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -846,6 +847,29 @@ describe("MCP HTTP server shutdown", () => {
       release();
       await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(143));
     });
+  });
+
+  it("kills the solver child processes before exiting on SIGTERM", async () => {
+    let releaseSolvers!: () => void;
+    const held = new Promise<void>((resolve) => { releaseSolvers = resolve; });
+    const solverClose = vi.spyOn(SolverChildPool.prototype, "close").mockImplementation(() => held);
+    try {
+      await withShutdown(async ({ sigterm, release, poolClose, exit }) => {
+        sigterm();
+        await vi.waitFor(() => expect(poolClose).toHaveBeenCalledOnce());
+        release();
+
+        // One pool per solver.
+        await vi.waitFor(() => expect(solverClose).toHaveBeenCalledTimes(2));
+        await new Promise((r) => setTimeout(r, 50));
+        expect(exit).not.toHaveBeenCalled();
+        releaseSolvers();
+        await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(143));
+      });
+    } finally {
+      releaseSolvers();
+      solverClose.mockRestore();
+    }
   });
 
   it("refuses a client that connects while it shuts down, and still exits", async () => {
