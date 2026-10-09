@@ -1100,13 +1100,15 @@ export function resolveCommonLispPackageCalls(graph: CodeGraph): void {
   }
 
   // Rewriting can collapse two edges onto one pair; drop the duplicates.
+  // Compacted in place, since `push(...deduped)` overflows the stack on a
+  // batch with ~125k calls.
   const kept = new Set<string>();
-  const deduped = graph.calls.filter((c) => {
+  let n = 0;
+  for (const c of graph.calls) {
     const key = `${c.caller}->${c.callee}`;
-    if (c.caller === c.callee || kept.has(key)) return false;
+    if (c.caller === c.callee || kept.has(key)) continue;
     kept.add(key);
-    return true;
-  });
-  graph.calls.length = 0;
-  graph.calls.push(...deduped);
+    graph.calls[n++] = c;
+  }
+  graph.calls.length = n;
 }
