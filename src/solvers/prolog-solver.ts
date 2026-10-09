@@ -670,18 +670,11 @@ export function createPrologSolver(): Solver {
       return finalize([{ status: "error", error: consultErrs.join("\n") }]);
     }
 
-    const results: SolverResult[] = [];
-    for (const query of queries) {
-      const result = solveSessionQuery(
-        pl,
-        moduleId,
-        query,
-        inferenceBudget,
-        explain,
-      );
-      results.push(result);
-      if (result.status === "error") break;
-    }
+    // One result per query, in order: an error result here is per-query
+    // (fatal WASM errors throw out of the batch), so later queries still run.
+    const results = queries.map((query) =>
+      solveSessionQuery(pl, moduleId, query, inferenceBudget, explain),
+    );
     return finalize(results);
   };
 
