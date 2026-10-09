@@ -438,7 +438,7 @@ describe("Chiasmus MCP Server", () => {
       expect(parsed[1].answers[0].bindings.X).toBe("first");
     });
 
-    it("stops batch on first error", async () => {
+    it("runs every query after one fails to parse", async () => {
       const result = await client.callTool({
         name: "chiasmus_verify",
         arguments: {
@@ -451,9 +451,11 @@ describe("Chiasmus MCP Server", () => {
       const content = result.content as Array<{ type: string; text: string }>;
       const parsed = JSON.parse(content[0].text);
       expect(Array.isArray(parsed)).toBe(true);
-      expect(parsed).toHaveLength(2);
+      expect(parsed).toHaveLength(3);
       expect(parsed[0].status).toBe("success");
       expect(parsed[1].status).toBe("error");
+      expect(parsed[2].status).toBe("success");
+      expect(parsed[2].answers[0].bindings.X).toBe("c");
     });
   });
 

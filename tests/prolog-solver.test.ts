@@ -262,6 +262,35 @@ describe("PrologSolver", () => {
     });
   });
 
+  describe("batch", () => {
+    it("runs every query after one exceeds the inference budget", async () => {
+      // Callers pair results with queries by position, so a per-query error
+      // must not drop the rest of the batch.
+      solver = createPrologSolver();
+      const results = await solver.solveBatch!({
+        type: "prolog",
+        program: `
+          edge(a, b). edge(b, c).
+          f(0).
+          f(N) :- N > 0, N1 is N - 1, f(N1).
+        `,
+        queries: ["edge(a, X).", "f(10000).", "edge(b, X)."],
+        maxInferences: 1_000,
+      });
+
+      expect(results).toHaveLength(3);
+      expect(results[0].status).toBe("success");
+      expect(results[1]).toMatchObject({
+        status: "error",
+        error: "inference limit exceeded",
+      });
+      expect(results[2].status).toBe("success");
+      if (results[2].status === "success") {
+        expect(results[2].answers[0].bindings.X).toBe("c");
+      }
+    });
+  });
+
   it("handles list operations", async () => {
     solver = createPrologSolver();
     const result = await solver.solve({
