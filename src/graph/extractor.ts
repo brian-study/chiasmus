@@ -38,7 +38,8 @@ function commonAncestor(paths: string[]): string {
     return "/" + p.join("/");
   }
   let i = 0;
-  const min = Math.min(...parts.map((p) => p.length));
+  // reduce, not Math.min(...): a spread passes one argument per file.
+  const min = parts.reduce((m, p) => Math.min(m, p.length), Infinity);
   while (i < min) {
     const seg = parts[0][i];
     if (!parts.every((p) => p[i] === seg)) break;
@@ -162,14 +163,16 @@ export async function extractGraph(
   const fileNodes = new Map<string, FileNode>();
   const allTypeInfo: FileTypeInfo[] = [];
 
+  // Append element by element: `push(...xs)` passes one argument per fact and
+  // overflows the stack once a single file has ~125k of them.
   for (const { graph: p } of [...cached, ...fresh]) {
-    defines.push(...p.defines);
-    calls.push(...p.calls);
-    imports.push(...p.imports);
-    exports.push(...p.exports);
-    contains.push(...p.contains);
+    for (const d of p.defines) defines.push(d);
+    for (const c of p.calls) calls.push(c);
+    for (const i of p.imports) imports.push(i);
+    for (const e of p.exports) exports.push(e);
+    for (const c of p.contains) contains.push(c);
     for (const fn of p.files ?? []) if (!fileNodes.has(fn.path)) fileNodes.set(fn.path, fn);
-    if (p._typeInfo) allTypeInfo.push(...p._typeInfo);
+    for (const t of p._typeInfo ?? []) allTypeInfo.push(t);
   }
 
   const merged: CodeGraph = { defines, calls, imports, exports, contains, files: [...fileNodes.values()] };
