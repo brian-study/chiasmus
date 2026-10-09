@@ -43,7 +43,12 @@ export function isFatalWasmError(e: unknown): boolean {
 
 /** The error a module's onAbort hook records: what Emscripten's abort() throws. */
 export function abortError(what: unknown): Error {
-  return new WasmRuntimeError(`Aborted(${String(what)})`);
+  return fatalWasmError(`Aborted(${String(what)})`);
+}
+
+/** An error isFatalWasmError() recognizes, for a module that died without throwing one. */
+export function fatalWasmError(message: string): Error {
+  return new WasmRuntimeError(message);
 }
 
 /** Keeps a catch block from turning a fatal WASM error into a solver result. */

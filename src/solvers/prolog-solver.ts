@@ -1,5 +1,5 @@
 import { initProlog, type PrologFull } from "prolog-wasm-full";
-import { abortError, isFatalWasmError, reportFatalSolverError, rethrowIfFatal } from "./fatal.js";
+import { abortError, fatalWasmError, isFatalWasmError, reportFatalSolverError } from "./fatal.js";
 import type {
   PrologAnswer,
   PrologBatchInput,
@@ -41,15 +41,39 @@ let plPromise: Promise<PrologFull> | null = null;
 let pathCounter = 0;
 let sessionCounter = 0;
 
-// Set once the WASM module aborts or traps; nothing may call into it after
-// that. Every catch below rethrows such errors (rethrowIfFatal) so they end
-// the solve instead of becoming a result followed by cleanup calls.
+// Set once the WASM module aborts, traps or exits; nothing may call into it
+// after that. Every catch below rethrows such errors (rethrowIfFatal) so they
+// end the solve instead of becoming a result followed by cleanup calls.
 let fatalError: Error | null = null;
 
 function markFatal(e: unknown): void {
   if (fatalError) return;
   fatalError = e instanceof Error ? e : new Error(String(e));
   reportFatalSolverError("prolog", fatalError);
+}
+
+/**
+ * halt/0,1 ends the runtime through Emscripten's exit(), which calls onExit
+ * and then throws an ExitStatus object, not a RuntimeError. So once the
+ * module is marked fatal, whatever it throws is fatal too.
+ */
+function isFatal(e: unknown): boolean {
+  return fatalError !== null || isFatalWasmError(e);
+}
+
+function rethrowIfFatal(e: unknown): void {
+  if (isFatal(e)) throw e;
+}
+
+/** Called by Emscripten's exit(), before it throws. */
+function onExit(status: number): void {
+  // Emscripten then sets this process's exit code to the status: put it
+  // back, since this process isn't exiting.
+  const exitCode = process.exitCode;
+  queueMicrotask(() => {
+    process.exitCode = exitCode;
+  });
+  markFatal(fatalWasmError(`Prolog runtime exited (halt), status ${status}`));
 }
 
 function unavailable(error: Error): SolverResult {
@@ -66,9 +90,10 @@ function uniqueSessionModule(): string {
 async function getPl(): Promise<PrologFull> {
   plPromise ??= (async () => {
     const pl = await initProlog();
-    // Emscripten calls this before unwinding an abort.
+    // Emscripten calls these before unwinding an abort or an exit.
     Object.assign(pl.em, {
       onAbort: (what: unknown) => markFatal(abortError(what)),
+      onExit,
     });
     // The message-capture predicate and hook must be module-qualified to
     // `user:`. SWI invokes message_hook from whichever module is emitting
@@ -263,10 +288,10 @@ function runQuery(
         answers.push(bindings);
       });
     } catch (e) {
-      fatal = isFatalWasmError(e);
+      fatal = isFatal(e);
       throw e;
     } finally {
-      // No close() call into a module that just aborted or trapped.
+      // No close() call into a module that just aborted, trapped or exited.
       if (!fatal) {
         try {
           handle.close();
@@ -696,7 +721,7 @@ export function createPrologSolver(): Solver {
     try {
       pl = await getPl();
     } catch (e) {
-      if (isFatalWasmError(e)) markFatal(e);
+      if (isFatal(e)) markFatal(e);
       return [{
         status: "error",
         error: `prolog init failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -708,9 +733,10 @@ export function createPrologSolver(): Solver {
     try {
       return solveLoaded(pl, userProgram, queries, explain, inferenceBudget);
     } catch (e) {
-      if (!isFatalWasmError(e)) throw e;
+      if (!isFatal(e)) throw e;
       markFatal(e);
-      return [{ status: "error", error: e instanceof Error ? e.message : String(e) }];
+      // An exit's ExitStatus isn't an Error: report what onExit recorded.
+      return [{ status: "error", error: fatalError!.message }];
     }
   };
 

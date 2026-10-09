@@ -96,7 +96,7 @@ All sessions share one skill library, so a template crafted in one is visible to
 
 The daemon has no authentication, so it answers only requests whose `Host` header, and `Origin` header if they send one, names `localhost`, `127.0.0.1`, `[::1]` or the `--host` address (unless that is `0.0.0.0` or `::`). Anything else gets a 403 before a session starts. This stops a web page from reaching the daemon through DNS rebinding: the page's own hostname is made to resolve to 127.0.0.1, but the browser still sends that hostname. If clients reach the daemon by another name, list it with `--allowed-hosts name1,name2`.
 
-If a solver's WASM module aborts or traps, the daemon logs `fatal <solver> WASM error, exiting so the process is restarted` and exits with code 1 instead of staying up unresponsive. A `chiasmus_graph` or `chiasmus_map` call running at that moment doesn't change this: the daemon kills the graph child process with SIGKILL as it exits, so no graph process outlives it. The exit is immediate: requests in flight get no answer, and their clients see the connection close. Run the daemon under a supervisor that restarts it, such as a systemd unit with `Restart=on-failure`. On SIGTERM or SIGINT it stops accepting requests (a request on a connection already open gets a 503), closes its sessions and connections, kills the graph child process and exits with 143 or 130, at most 5 s after the signal.
+Solves run in child processes of the daemon (see `chiasmus_verify` below), so an input that crashes a solver costs only the call that sent it: the daemon and its other sessions carry on. With `CHIASMUS_SOLVER_WORKER=off` they run in the daemon itself; a solver whose WASM module aborts or traps there makes the daemon log `fatal <solver> WASM error, exiting so the process is restarted` and exit with code 1 instead of staying up unresponsive. A `chiasmus_graph` or `chiasmus_map` call running at that moment doesn't change this: the daemon kills its child processes with SIGKILL as it exits, so none outlives it. The exit is immediate: requests in flight get no answer, and their clients see the connection close. Run the daemon under a supervisor that restarts it, such as a systemd unit with `Restart=on-failure`. On SIGTERM or SIGINT it stops accepting requests (a request on a connection already open gets a 503), closes its sessions and connections, kills the graph and solver child processes and exits with 143 or 130, at most 5 s after the signal.
 
 ## Tools
 
@@ -132,6 +132,8 @@ chiasmus_verify solver="prolog" format="mermaid"
   query="can_reach(idle, done)."
 → { status: "success", answers: [{}] }
 ```
+
+Z3 and Prolog each run in a child process of the server, one solve at a time per solver (up to 32 more wait in a queue). Some inputs break a solver's WebAssembly module for good: a very large input overflows its stack, a small one can exhaust Z3's 2 GiB heap, and Prolog's `halt` ends its runtime. Such a call gets an error result, such as `{ status: "error", error: "memory access out of bounds" }`, the child is replaced, and the next solve runs in a fresh one. Cancelling a call, or a solve running past `CHIASMUS_SOLVER_JOB_TIMEOUT_MS`, kills its child too. `chiasmus_solve` and `chiasmus_craft` run their solves the same way. Set `CHIASMUS_SOLVER_WORKER=off` to run solves inside the server process instead, where such a crash ends the process.
 
 **`chiasmus_graph`** — Analyze source code call graphs via tree-sitter + Prolog. Parses source files, extracts cross-module call graphs, runs formal analyses.
 
@@ -450,7 +452,7 @@ try {
 }
 ```
 
-After a WASM abort or trap a solver module is unusable, and every later solve on it returns an error. A long-lived host should call `exitOnFatalSolverError()` (log and exit 1, so a supervisor restarts it) or pass its own handler to `setFatalSolverErrorHandler()`.
+`SolverSession` runs its solves in a child process per solver, shared by every session in the process, so an input that crashes a solver gets an error result and the next solve gets a fresh child. Pass `{ signal }` as `solve()`'s second argument to stop a solve by killing its child. Call `shutdownSolverChildren()` before exiting to kill the children and wait for them; an exit through `process.exit()` kills them anyway. `createZ3Solver()` and `createPrologSolver()`, and `SolverSession` with `CHIASMUS_SOLVER_WORKER=off`, run in the calling process: after a WASM abort, trap or `halt` that solver module is unusable, and every later solve on it returns an error. A long-lived host doing that should call `exitOnFatalSolverError()` (log and exit 1, so a supervisor restarts it) or pass its own handler to `setFatalSolverErrorHandler()`.
 
 ### Graph Analysis
 
@@ -493,7 +495,7 @@ library.close();
 | Subpath | Exports |
 |---------|---------|
 | `chiasmus` | All public APIs (barrel export) |
-| `chiasmus/solvers` | `SolverSession`, `createZ3Solver`, `createPrologSolver`, `correctionLoop`, `setFatalSolverErrorHandler`, `exitOnFatalSolverError`, `isFatalWasmError`, solver types |
+| `chiasmus/solvers` | `SolverSession`, `createZ3Solver`, `createPrologSolver`, `createChildSolver`, `shutdownSolverChildren`, `correctionLoop`, `setFatalSolverErrorHandler`, `exitOnFatalSolverError`, `isFatalWasmError`, solver types |
 | `chiasmus/graph` | `extractGraph`, `runAnalysis`, `runAnalysisFromGraph`, `buildFactsResult`, `graphToProlog`, `parseMermaid`, `detectCommunities`, `detectHubs`, `detectBridges`, `analyzeBridges`, `detectSurprisingConnections`, `detectEntryPoints`, `graphDiff`, `saveSnapshot`/`loadSnapshot`/`listSnapshots`, cache APIs, adapter registry, graph types |
 | `chiasmus/formalize` | `lintSpec`, `classifyFeedback`, `extractPrologQuery`, `FormalizationEngine`, result types |
 | `chiasmus/skills` | `SkillLibrary`, `SkillLearner`, `craftTemplate`, `validateTemplate`, skill types |
@@ -510,6 +512,8 @@ library.close();
 | `CHIASMUS_GRAPH_WORKER` | on | `0`/`off`/`false` runs `chiasmus_graph` and `chiasmus_map` in the server process instead of a child process |
 | `CHIASMUS_GRAPH_WORKER_HEAP_MB` | Node's default | V8 heap limit of the graph child process; an overrun fails the job and replaces the child, the server keeps running |
 | `CHIASMUS_GRAPH_JOB_TIMEOUT_MS` | `600000` (10 min) | A graph job running longer is killed and the graph child process replaced. Digits only (other values keep the default); capped at `2147483647` (about 24.8 days) |
+| `CHIASMUS_SOLVER_WORKER` | on | `0`/`off`/`false` runs Z3 and Prolog solves in the server process instead of a child process per solver; a solver crash then ends the process |
+| `CHIASMUS_SOLVER_JOB_TIMEOUT_MS` | `600000` (10 min) | A solve running longer, child start-up included, is killed and its solver's child process replaced. Raise it for Z3 solves that set a longer `:timeout`. Digits only; capped at `2147483647` |
 | `ANTHROPIC_API_KEY` | — | Optional: Anthropic provider for autonomous mode |
 | `DEEPSEEK_API_KEY` | — | Optional: DeepSeek provider for autonomous mode |
 | `OPENAI_API_KEY` | — | Optional: OpenAI provider for autonomous mode |
