@@ -6,7 +6,7 @@
 
 import { serveJobs } from "../child/serve.js";
 import { setFatalSolverErrorHandler } from "./fatal.js";
-import type { SolverJobMessage } from "./child-pool.js";
+import { capResults, type SolverJobMessage } from "./child-pool.js";
 import type { PrologBatchInput, Solver, SolverInput, SolverResult, SolverType } from "./types.js";
 
 // Recorded, not acted on: the job's result carries it to the parent, which
@@ -67,5 +67,5 @@ serveJobs<SolverJobMessage, SolverResult[]>(async ({ solver: type, input }) => {
   } finally {
     failRunning = null;
   }
-  return { result, fatal };
+  return { result: capResults(result), fatal };
 });
