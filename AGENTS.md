@@ -64,7 +64,7 @@ src/
 │   ├── facts.ts           # graphToProlog — CodeGraph → Prolog facts (incl. calls_qn/3, imports_resolved/3)
 │   ├── analyses.ts        # runAnalysis — dispatches all graph analyses
 │   ├── native-analyses.ts # O(V+E) cycles/reachability/impact/dead-code/callers/callees
-│   ├── graph-util.ts      # Shared helpers: buildUndirectedGraph, forEachUndirectedEdge, undirectedDegree
+│   ├── graph-util.ts      # Shared helpers: buildUndirectedGraph (+ entriesByName), forEachUndirectedEdge, undirectedDegree
 │   ├── community.ts       # Louvain community detection + cohesion score
 │   ├── insights.ts        # detectHubs, detectBridges/analyzeBridges (sampled above 2k nodes), detectSurprisingConnections
 │   ├── diff.ts            # graphDiff — set diff on nodes + (src,tgt) edge keys
@@ -360,6 +360,7 @@ web-tree-sitter (all four Lisp grammars) is initialised once per thread: `initWa
 - Test imports use `../src/solvers/z3-solver.js` (not `../../dist/...`)
 - Template slots use `{{SLOT:name}}` markers in skeleton strings
 - Lint tool (`formalize/validate.ts`) auto-fixes markdown fences, `(check-sat)`, `(get-model)`, `(set-logic)` before reporting errors
+- Graph node names are whatever the source calls them, `toString`, `constructor` and `__proto__` included: keep per-name state in a `Map`/`Set`, never a plain object, and never hand a name to graphology as a node key. `buildUndirectedGraph` keys graphology nodes `#<index>`; `entriesByName` maps an algorithm's result back to names
 
 ### HTTP daemon (`chiasmus-http`)
 - `mcp-http-server.ts` serves the same tools over Streamable HTTP, one long-lived process for many clients. Each MCP session gets its own `Server` from `createChiasmusServer()`, but the daemon creates one `SkillLibrary`, LLM and embedding adapter at start and passes them to every session: a library per session would keep its own template cache and miss the templates another session crafts, and a local embedding adapter per session would load its own model. They close in `close()`, never with a session

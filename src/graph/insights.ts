@@ -2,7 +2,7 @@ import { UndirectedGraph } from "graphology";
 import betweennessModule from "graphology-metrics/centrality/betweenness.js";
 import type { CodeGraph } from "./types.js";
 import { detectCommunities, type Community } from "./community.js";
-import { buildUndirectedGraph, collectNodes, undirectedDegree, forEachUndirectedEdge } from "./graph-util.js";
+import { buildUndirectedGraph, collectNodes, entriesByName, undirectedDegree, forEachUndirectedEdge } from "./graph-util.js";
 
 const betweennessCentrality = betweennessModule as unknown as (
   graph: UndirectedGraph,
@@ -97,8 +97,8 @@ export function analyzeBridges(graph: CodeGraph, opts: BridgeOptions = {}): Brid
 
   const exactMaxNodes = opts.exactMaxNodes ?? EXACT_BETWEENNESS_MAX_NODES;
   if (nodes.size <= exactMaxNodes) {
-    const gg = buildUndirectedGraph(graph, nodes);
-    return { bridges: topBridges(Object.entries(betweennessCentrality(gg, { normalized: true }))) };
+    const view = buildUndirectedGraph(graph, nodes);
+    return { bridges: topBridges(entriesByName(view, betweennessCentrality(view.graph, { normalized: true }))) };
   }
 
   const requested = Math.floor(opts.pivots ?? BETWEENNESS_PIVOTS);
