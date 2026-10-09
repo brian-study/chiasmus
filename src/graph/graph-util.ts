@@ -50,19 +50,44 @@ export function collectNodes(graph: CodeGraph): Set<string> {
 }
 
 /**
+ * A graphology graph whose node `#i` stands for `names[i]`. graphology and
+ * its algorithms keep adjacency and results in plain objects keyed by node
+ * key, so a name like `toString`, `constructor` or `__proto__` used as a key
+ * collides with Object.prototype (addEdge throws "an edge linking ... already
+ * exists"). The keys are not bare indices because plain objects enumerate
+ * integer-like keys in numeric order: that would reorder every node's
+ * neighbors and shift Louvain and Brandes results away from name-keyed ones.
+ */
+export interface UndirectedView {
+  graph: UndirectedGraph;
+  names: string[];
+}
+
+/**
  * Build an undirected graphology graph from the call relation. Self-loops
  * and duplicate edges are dropped — every unique {A,B} pair becomes one edge.
  */
-export function buildUndirectedGraph(graph: CodeGraph, nodes?: Set<string>): UndirectedGraph {
+export function buildUndirectedGraph(graph: CodeGraph, nodes?: Set<string>): UndirectedView {
   const g = new UndirectedGraph();
-  const ns = nodes ?? collectNodes(graph);
-  for (const n of ns) g.addNode(n);
+  const names = [...(nodes ?? collectNodes(graph))];
+  const keys = new Map<string, string>();
+  names.forEach((n, i) => {
+    keys.set(n, `#${i}`);
+    g.addNode(`#${i}`);
+  });
   for (const c of graph.calls) {
     if (c.caller === c.callee) continue;
-    if (!g.hasNode(c.caller) || !g.hasNode(c.callee)) continue;
-    if (!g.hasEdge(c.caller, c.callee)) g.addEdge(c.caller, c.callee);
+    const a = keys.get(c.caller);
+    const b = keys.get(c.callee);
+    if (a === undefined || b === undefined) continue;
+    if (!g.hasEdge(a, b)) g.addEdge(a, b);
   }
-  return g;
+  return { graph: g, names };
+}
+
+/** Re-key a graphology per-node result from node key to node name. */
+export function entriesByName<T>(view: UndirectedView, result: Record<string, T>): Array<[string, T]> {
+  return Object.entries(result).map(([key, value]) => [view.names[Number(key.slice(1))], value]);
 }
 
 /** Iterate each undirected edge exactly once. */

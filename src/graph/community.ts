@@ -1,7 +1,7 @@
 import { UndirectedGraph } from "graphology";
 import louvainModule from "graphology-communities-louvain";
 import type { CodeGraph } from "./types.js";
-import { collectNodes, buildUndirectedGraph, forEachUndirectedEdge } from "./graph-util.js";
+import { collectNodes, buildUndirectedGraph, entriesByName, forEachUndirectedEdge } from "./graph-util.js";
 
 // NodeNext/CJS interop: graphology-communities-louvain is `module.exports = fn`
 // but NodeNext surfaces the import as the namespace object. Cast to callable.
@@ -54,42 +54,44 @@ export function detectCommunities(
   const nodes = collectNodes(graph);
   if (nodes.size === 0) return [];
 
-  const gg = buildUndirectedGraph(graph, nodes);
+  const view = buildUndirectedGraph(graph, nodes);
 
-  let assignments: Record<string, number>;
-  if (gg.size === 0) {
-    assignments = {};
+  // A Map, not a Record: a node named `__proto__` or `toString` must not
+  // collide with Object.prototype.
+  let assignments: Map<string, number>;
+  if (view.graph.size === 0) {
+    assignments = new Map();
     let i = 0;
-    for (const n of nodes) assignments[n] = i++;
+    for (const n of nodes) assignments.set(n, i++);
   } else {
-    assignments = louvain(gg, { rng: makeRng(seed) });
+    assignments = new Map(entriesByName(view, louvain(view.graph, { rng: makeRng(seed) })));
     // Louvain skips nodes with no edges — assign each isolate its own community.
     let nextId = 0;
-    for (const cid of Object.values(assignments)) if (cid >= nextId) nextId = cid + 1;
+    for (const cid of assignments.values()) if (cid >= nextId) nextId = cid + 1;
     for (const n of nodes) {
-      if (!(n in assignments)) assignments[n] = nextId++;
+      if (!assignments.has(n)) assignments.set(n, nextId++);
     }
   }
 
   // Recursively split any community larger than max(10, 0.25·n). Without
   // this, Louvain leaves mega-communities that swamp the rest of the output.
   const splitThreshold = Math.max(10, Math.floor(0.25 * nodes.size));
-  let next = Math.max(-1, ...Object.values(assignments)) + 1;
+  let next = Math.max(-1, ...assignments.values()) + 1;
   const byCommunity = groupBy(assignments);
   for (const [cidStr, members] of Object.entries(byCommunity)) {
     if (members.length <= splitThreshold) continue;
     const memberSet = new Set(members);
     const sub = buildUndirectedGraph(graph, memberSet);
-    if (sub.size === 0) continue;
-    const subAssign = louvain(sub, { rng: makeRng(seed + Number(cidStr) + 1) });
-    const distinctSubIds = new Set(Object.values(subAssign));
+    if (sub.graph.size === 0) continue;
+    const subAssign = entriesByName(sub, louvain(sub.graph, { rng: makeRng(seed + Number(cidStr) + 1) }));
+    const distinctSubIds = new Set(subAssign.map(([, subId]) => subId));
     if (distinctSubIds.size <= 1) continue;
     const subIds = [...distinctSubIds];
     const remap = new Map<number, number>();
     remap.set(subIds[0], Number(cidStr));
     for (let i = 1; i < subIds.length; i++) remap.set(subIds[i], next++);
-    for (const [member, subId] of Object.entries(subAssign)) {
-      assignments[member] = remap.get(subId)!;
+    for (const [member, subId] of subAssign) {
+      assignments.set(member, remap.get(subId)!);
     }
   }
 
@@ -120,9 +122,9 @@ export function detectCommunities(
   }));
 }
 
-function groupBy(assignments: Record<string, number>): Record<string, string[]> {
+function groupBy(assignments: Map<string, number>): Record<string, string[]> {
   const out: Record<string, string[]> = {};
-  for (const [node, cid] of Object.entries(assignments)) {
+  for (const [node, cid] of assignments) {
     const k = String(cid);
     if (!out[k]) out[k] = [];
     out[k].push(node);
