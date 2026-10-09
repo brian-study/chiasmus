@@ -888,7 +888,8 @@ function commonPathAncestor(paths: string[]): string {
     return "/" + p.join("/");
   }
   let i = 0;
-  const min = Math.min(...parts.map((p) => p.length));
+  // reduce, not Math.min(...): a spread passes one argument per file.
+  const min = parts.reduce((m, p) => Math.min(m, p.length), Infinity);
   while (i < min) {
     const seg = parts[0][i];
     if (!parts.every((p) => p[i] === seg)) break;
