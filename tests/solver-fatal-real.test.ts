@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { createZ3Solver } from "../src/solvers/z3-solver.js";
 import { setFatalSolverErrorHandler } from "../src/solvers/fatal.js";
 import type { SolverResult } from "../src/solvers/types.js";
@@ -47,9 +49,13 @@ describe("ordinary solver errors stay recoverable", () => {
 // another input that crashes the module rather than deleting them.
 describe("real WASM crashes", () => {
   // A crash leaves the solver unusable for the rest of the process, so each
-  // test loads its own copy of the solver modules.
+  // test loads its own copy of the solver modules, and its own SWI runtime:
+  // prolog-wasm-full requires the Emscripten factory, which works once, so
+  // its require cache entry goes too.
   beforeEach(() => {
     vi.resetModules();
+    const swipl = fileURLToPath(new URL("../vendor/swipl-web.cjs", import.meta.resolve("prolog-wasm-full")));
+    delete createRequire(import.meta.url).cache[swipl];
   });
 
   it("reports a Z3 trap, fails the queued solve, and fails fast afterwards", async () => {
@@ -111,5 +117,51 @@ describe("real WASM crashes", () => {
       expect(result.status).toBe("error");
       if (result.status === "error") expect(result.error).toMatch(/unavailable.*restart the process/);
     }
+  });
+
+  // halt/0,1 makes SWI call Emscripten's exit(), which ends the runtime and
+  // throws an ExitStatus object, not a RuntimeError. Taken for an ordinary
+  // error, the solve went on calling into the exited runtime and trapped, or,
+  // from a directive, returned "consult failed: [object Object]" and left the
+  // trap to the next solve.
+  it.each([
+    ["the query", "p(1).", "halt."],
+    ["the query, through call/1", "p(1).", "G = halt, call(G)."],
+    ["a directive", ":- halt.\np(1).", "p(X)."],
+    ["a directive, with a status", ":- initialization(halt(3)).\np(1).", "p(X)."],
+  ])("reports a halt from %s as fatal, without calling back into the exited runtime", async (_where, program, query) => {
+    const fatal = await import("../src/solvers/fatal.js");
+    const prolog = await import("../src/solvers/prolog-solver.js");
+    const handler = vi.fn();
+    fatal.setFatalSolverErrorHandler(handler);
+    const solve = async (q: string) => {
+      const solver = prolog.createPrologSolver();
+      try {
+        return await solver.solve({ type: "prolog", program, query: q });
+      } finally {
+        solver.dispose();
+      }
+    };
+
+    const exitCode = process.exitCode;
+    let halted: SolverResult;
+    try {
+      halted = await solve(query);
+      // Emscripten's exit sets the host's exit code; a halt must not end
+      // this process with it.
+      await Promise.resolve();
+      expect(process.exitCode).toBe(exitCode);
+    } finally {
+      process.exitCode = exitCode;
+    }
+    const later = await solve("p(X).");
+
+    expect(halted.status).toBe("error");
+    if (halted.status === "error") expect(halted.error).toMatch(/^Prolog runtime exited \(halt\), status \d+$/);
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler.mock.calls[0][0]).toBe("prolog");
+    expect(handler.mock.calls[0][1]).toBeInstanceOf(WebAssembly.RuntimeError);
+    expect(later.status).toBe("error");
+    if (later.status === "error") expect(later.error).toMatch(/unavailable.*restart the process/);
   });
 });
