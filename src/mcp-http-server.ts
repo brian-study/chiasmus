@@ -12,6 +12,7 @@ import { createEmbeddingFromEnv, createLLMFromEnv } from "./llm/anthropic.js";
 import { SkillLibrary } from "./skills/library.js";
 import { exitOnFatalSolverError } from "./solvers/fatal.js";
 import { shutdownGraphChild } from "./graph/child-pool.js";
+import { shutdownSolverChildren } from "./solvers/child-pool.js";
 import type { Server as McpProtocolServer } from "@modelcontextprotocol/sdk/server/index.js";
 import type { EmbeddingAdapter } from "./llm/types.js";
 
@@ -617,9 +618,10 @@ export async function startChiasmusHttpServer(options: HttpOptions): Promise<Chi
 
 /**
  * On SIGINT or SIGTERM: close the daemon, which cancels its sessions' graph
- * calls (killing a busy graph child), then kill an idle graph child and wait
- * for it to exit, then exit 130 or 143. A shutdown still draining after
- * `deadlineMs` exits anyway; the exit kills a graph child that is left.
+ * and solver calls (killing a busy child), then kill the idle graph and
+ * solver children and wait for them to exit, then exit 130 or 143. A
+ * shutdown still draining after `deadlineMs` exits anyway; the exit kills a
+ * child that is left.
  */
 export function exitOnShutdownSignals(daemon: ChiasmusHttpServer, deadlineMs = SHUTDOWN_DEADLINE_MS): void {
   const stop = (code: number): void => {
@@ -630,7 +632,7 @@ export function exitOnShutdownSignals(daemon: ChiasmusHttpServer, deadlineMs = S
       process.exit(code);
     }, deadlineMs);
     void daemon.close()
-      .then(shutdownGraphChild)
+      .then(() => Promise.all([shutdownGraphChild(), shutdownSolverChildren()]))
       .catch((e) => {
         console.error(`[Chiasmus] MCP HTTP shutdown failed: ${e instanceof Error ? e.message : String(e)}`);
       })
@@ -651,9 +653,10 @@ const isMain = resolvedArg === thisFile
   || process.argv[1]?.endsWith("mcp-http-server.js");
 
 if (isMain) {
-  // A solver WASM abort would otherwise leave the daemon hung, not dead, so
-  // its supervisor never restarts it. The exit also kills a running graph
-  // job's child process (GraphChildPool's process 'exit' listener).
+  // Solves run in child processes. With CHIASMUS_SOLVER_WORKER=off they run
+  // here, and a solver WASM abort would leave the daemon hung, not dead, so
+  // its supervisor would never restart it. The exit also kills the graph and
+  // solver children (ChildPool's process 'exit' listener).
   exitOnFatalSolverError();
   try {
     const options = parseHttpOptions();

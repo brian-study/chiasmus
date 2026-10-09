@@ -26,6 +26,7 @@ import { MAX_FILE_SIZE } from "./graph/analyses.js";
 import { extractGraph } from "./graph/extractor.js";
 import { GRAPH_ANALYSES } from "./graph/tool-handlers.js";
 import { runGraphTool, shutdownGraphChild } from "./graph/child-pool.js";
+import { shutdownSolverChildren } from "./solvers/child-pool.js";
 import { readFileSync, statSync } from "node:fs";
 import { craftTemplate } from "./skills/craft.js";
 import { parseMermaid } from "./graph/mermaid.js";
@@ -513,7 +514,7 @@ Caches embeddings by content SHA-256 under \$CHIASMUS_HOME/embeddings — unchan
   },
 ];
 
-async function handleVerify(args: Record<string, unknown>): Promise<CallToolResult> {
+async function handleVerify(args: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
   const solver = args.solver;
   let input = args.input as string | undefined;
   const query = args.query as string | undefined;
@@ -548,7 +549,7 @@ async function handleVerify(args: Record<string, unknown>): Promise<CallToolResu
     if (solver === "z3") {
       const session = await SolverSession.create("z3");
       try {
-        result = await session.solve({ type: "z3", smtlib: input });
+        result = await session.solve({ type: "z3", smtlib: input }, { signal });
       } finally {
         session.dispose();
       }
@@ -575,7 +576,7 @@ async function handleVerify(args: Record<string, unknown>): Promise<CallToolResu
             program: input,
             queries,
             explain: explain ?? false,
-          });
+          }, { signal });
           return {
             content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
           };
@@ -597,7 +598,7 @@ async function handleVerify(args: Record<string, unknown>): Promise<CallToolResu
             program: input,
             query,
             explain: explain ?? false,
-          });
+          }, { signal });
         } finally {
           session.dispose();
         }
@@ -1081,7 +1082,7 @@ export async function createChiasmusServer(
 
     switch (name) {
       case "chiasmus_verify":
-        return handleVerify(args ?? {});
+        return handleVerify(args ?? {}, extra.signal);
       case "chiasmus_skills":
         return handleSkills(library, args ?? {});
       case "chiasmus_formalize":
@@ -1120,8 +1121,8 @@ export async function createChiasmusServer(
 
 /**
  * Wire SIGINT/SIGTERM handlers that close the SkillLibrary (which flushes
- * SQLite WAL state), close the MCP server and kill the graph child process
- * before exiting. Exposed so tests can verify the registration without
+ * SQLite WAL state), close the MCP server and kill the graph and solver child
+ * processes before exiting. Exposed so tests can verify the registration without
  * having to send real signals.
  */
 export function setupShutdownHandlers(
@@ -1147,6 +1148,11 @@ export function setupShutdownHandlers(
     } catch (e) {
       console.error(`[Chiasmus] graph child shutdown failed: ${e instanceof Error ? e.message : String(e)}`);
     }
+    try {
+      await shutdownSolverChildren();
+    } catch (e) {
+      console.error(`[Chiasmus] solver child shutdown failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
     // Preserve the signal convention: exit code 128 + signal number.
     const code = signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 0;
     process.exit(code);
@@ -1168,8 +1174,9 @@ const isMain = resolvedArg === thisFile
   || process.argv[1]?.endsWith("mcp-server.js");
 
 if (isMain) {
-  // After a solver WASM abort this process would otherwise keep running with a
-  // broken solver module, or hang in it; exit so it is restarted.
+  // Solves run in child processes. With CHIASMUS_SOLVER_WORKER=off they run
+  // here, and after a solver WASM abort this process would keep running with
+  // a broken solver module, or hang in it: exit so it is restarted.
   exitOnFatalSolverError();
   const { server, library } = await createChiasmusServer();
   const transport = new StdioServerTransport();

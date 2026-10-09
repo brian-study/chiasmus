@@ -10,10 +10,12 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { MAX_FILE_SIZE } from "../src/graph/analyses.js";
 
-// A solver WASM abort used to leave the server process running with a broken
-// solver module, or hung in it. These run each CLI entry as its own process,
-// crash a real solver module through an MCP call, and require exit code 1
-// before any answer arrives.
+// Each CLI entry runs as its own process here, and a real solver module is
+// crashed through an MCP call. Solves run in a child process per solver
+// (SolverChildPool), so the entry answers that call with an error and goes on
+// serving. With CHIASMUS_SOLVER_WORKER=off they run in the entry itself,
+// where a crash leaves the solver module broken, or the process hung in it:
+// there the entry must exit 1 before any answer arrives, so it is restarted.
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -74,11 +76,19 @@ afterAll(() => {
 });
 afterEach(killRunning);
 
-function startEntry(home: string, entry = "mcp-server.ts", args: string[] = []): Entry {
+/** Solves run in the entry process itself. */
+const INLINE_SOLVERS = { CHIASMUS_SOLVER_WORKER: "off" };
+
+function startEntry(
+  home: string,
+  entry = "mcp-server.ts",
+  args: string[] = [],
+  env: Record<string, string> = {},
+): Entry {
   // Only PATH and a scratch home: no LLM keys, and no real ~/.chiasmus.
   const child = spawn(process.execPath, ["--import", "tsx", join("src", entry), ...args], {
     cwd: repoRoot,
-    env: { PATH: process.env.PATH ?? "", HOME: home, CHIASMUS_HOME: home },
+    env: { PATH: process.env.PATH ?? "", HOME: home, CHIASMUS_HOME: home, ...env },
   });
   running.add(child);
   child.once("exit", () => running.delete(child));
@@ -151,13 +161,110 @@ function stdioCaller(entry: Entry): { call: (name: string, args: Record<string, 
   return { call: (name, args) => request("tools/call", { name, arguments: args }) };
 }
 
+/** The JSON a chiasmus_verify call answered with: from a JSON-RPC response, or a client's tool result. */
+function verifyResult(answer: unknown): any {
+  const result = (answer as { result?: unknown }).result ?? answer;
+  return JSON.parse((result as { content: Array<{ text: string }> }).content[0].text);
+}
+
+/** Solver child processes of `pid` (`ps -A -o pid=,ppid=` works on Linux and macOS). */
+function solverChildrenOf(pid: number): number[] {
+  return childrenOf(pid, "solver-child");
+}
+
+/** `answer`, or a failure naming how the entry exited if it exits first (its pending calls never settle). */
+function beforeExit<T>(entry: Entry, answer: Promise<T>): Promise<T> {
+  return Promise.race([
+    answer,
+    entry.gone.then(({ code, signal }) => {
+      throw new Error(`entry exited (${signal ?? `code ${code}`}) before answering:\n${entry.stderr()}`);
+    }),
+  ]);
+}
+
+describe("a solver crash costs only the call that caused it", () => {
+  // POSIX only: the solver process check uses ps and signals.
+  it.skipIf(process.platform === "win32")("the stdio entry answers a Prolog trap and a halt with errors, goes on serving, and leaves no solver process", async () => {
+    const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-stdio-survive-"));
+    const entry = startEntry(home);
+    try {
+      const caller = stdioCaller(entry);
+      const verify = (query: string, input = "p(1).") =>
+        beforeExit(entry, caller.call("chiasmus_verify", { solver: "prolog", input, query })).then(verifyResult);
+
+      const trapped = await verify(PROLOG_TRAP_QUERY);
+      const halted = await verify("p(X).", ":- halt.\np(1).");
+      const after = await verify("p(X).");
+
+      expect(trapped).toEqual({ status: "error", error: "memory access out of bounds" });
+      expect(halted).toMatchObject({ status: "error", error: expect.stringMatching(/^Prolog runtime exited \(halt\)/) });
+      expect(after).toMatchObject({ status: "success", answers: [{ formatted: "X = 1" }] });
+      expect(entry.stderr()).not.toContain("WASM error, exiting");
+
+      // The solver child goes with the server.
+      const solverPids = solverChildrenOf(entry.child.pid!);
+      expect(solverPids.length).toBe(1);
+      entry.child.kill("SIGTERM");
+      expect(await entry.gone).toEqual({ code: 143, signal: null });
+      for (const pid of solverPids) expect(await waitGone(pid, 3_000)).toBe(true);
+    } finally {
+      await stopEntry(entry);
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("chiasmus-http answers a Z3 trap with an error and keeps every session", async () => {
+    const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-http-survive-"));
+    const entry = await startHttpEntry(home);
+    const other = new Client({ name: "entry-fatal-test-other", version: "0.0.1" });
+    try {
+      await other.connect(new StreamableHTTPClientTransport(entry.url));
+      const sat = { solver: "z3", input: "(declare-const x Int) (assert (= x 1))" };
+
+      const trapped = verifyResult(await beforeExit(entry, entry.call("chiasmus_verify", { solver: "z3", input: Z3_TRAP })));
+      const own = verifyResult(await beforeExit(entry, entry.call("chiasmus_verify", sat)));
+      const theirs = verifyResult(await beforeExit(entry, other.callTool({ name: "chiasmus_verify", arguments: sat })));
+
+      expect(trapped).toEqual({ status: "error", error: "memory access out of bounds" });
+      expect(own).toEqual({ status: "sat", model: { x: "1" } });
+      expect(theirs).toEqual({ status: "sat", model: { x: "1" } });
+      expect(entry.child.exitCode).toBeNull();
+    } finally {
+      await other.close().catch(() => undefined);
+      await entry.close();
+      await stopEntry(entry);
+      await rm(home, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it.runIf(process.env.CHIASMUS_Z3_ABORT_E2E)(
+    "chiasmus-http answers a Z3 check that aborts out of memory, and goes on serving (CHIASMUS_Z3_ABORT_E2E=1)",
+    async () => {
+      const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-http-oom-"));
+      const entry = await startHttpEntry(home);
+      try {
+        const aborted = verifyResult(await beforeExit(entry, entry.call("chiasmus_verify", { solver: "z3", input: Z3_OOM })));
+        const after = verifyResult(await beforeExit(entry, entry.call("chiasmus_verify", { solver: "z3", input: "(declare-const x Int) (assert (= x 1))" })));
+
+        expect(aborted).toMatchObject({ status: "error", error: expect.stringContaining("Aborted(Cannot enlarge memory arrays") });
+        expect(after).toEqual({ status: "sat", model: { x: "1" } });
+      } finally {
+        await entry.close();
+        await stopEntry(entry);
+        await rm(home, { recursive: true, force: true });
+      }
+    },
+    300_000,
+  );
+});
+
 async function expectEntryToExit(
   verifyArgs: Record<string, unknown>,
   solver: string,
   detail: string,
 ): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-stdio-"));
-  const entry = startEntry(home);
+  const entry = startEntry(home, "mcp-server.ts", [], INLINE_SOLVERS);
   try {
     // A process that survives answers the call; one that exits drops it.
     const answer = stdioCaller(entry).call("chiasmus_verify", verifyArgs);
@@ -176,7 +283,7 @@ async function expectEntryToExit(
   }
 }
 
-describe("CLI entry exits when a solver module crashes", () => {
+describe("with solves inline, the CLI entry exits when a solver module crashes", () => {
   it("exits 1 on a Prolog trap", async () => {
     await expectEntryToExit(
       { solver: "prolog", input: "p(1).", query: PROLOG_TRAP_QUERY },
@@ -223,7 +330,7 @@ type HttpEntry = Entry & {
   close: () => Promise<void>;
 };
 
-async function startHttpEntry(home: string): Promise<HttpEntry> {
+async function startHttpEntry(home: string, env: Record<string, string> = {}): Promise<HttpEntry> {
   const port = await freePort();
   const entry = startEntry(
     home,
@@ -233,6 +340,7 @@ async function startHttpEntry(home: string): Promise<HttpEntry> {
       // Z3_TRAP is over the default 10 MiB body limit.
       "--max-body-bytes", String(64 * 1024 * 1024),
     ],
+    env,
   );
   const url = new URL(`http://127.0.0.1:${port}/mcp`);
   const client = new Client({ name: "entry-fatal-test", version: "0.0.1" });
@@ -257,7 +365,7 @@ async function expectHttpEntryToExit(
   detail: string,
 ): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-http-"));
-  const entry = await startHttpEntry(home);
+  const entry = await startHttpEntry(home, INLINE_SOLVERS);
   try {
     // A process that survives answers the call; one that exits drops it.
     const answered = entry
@@ -275,7 +383,7 @@ async function expectHttpEntryToExit(
   }
 }
 
-describe("chiasmus-http exits when a solver module crashes", () => {
+describe("with solves inline, chiasmus-http exits when a solver module crashes", () => {
   it("exits 1 on a Z3 trap", async () => {
     await expectHttpEntryToExit({ solver: "z3", input: Z3_TRAP }, "z3", "memory access out of bounds");
   }, 90_000);
@@ -326,13 +434,18 @@ function ps(pid: number, column: "stat" | "args"): string {
   }
 }
 
-/** Graph child processes of `pid` (`ps -A -o pid=,ppid=` works on Linux and macOS). */
-function graphChildrenOf(pid: number): number[] {
+/** Child processes of `pid` running `entry` (`ps -A -o pid=,ppid=` works on Linux and macOS). */
+function childrenOf(pid: number, entry: string): number[] {
   const out = execFileSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8", maxBuffer: 64 * 1024 ** 2 });
   return out.split("\n").flatMap((line) => {
     const [p, pp] = line.trim().split(/\s+/).map(Number);
-    return pp === pid && ps(p, "args").includes("graph-child") ? [p] : [];
+    return pp === pid && ps(p, "args").includes(entry) ? [p] : [];
   });
+}
+
+/** Graph child processes of `pid`. */
+function graphChildrenOf(pid: number): number[] {
+  return childrenOf(pid, "graph-child");
 }
 
 /** Running or runnable (ps state R): working on a job, not waiting on IPC. */
@@ -421,9 +534,9 @@ describe.skipIf(process.platform === "win32")("a solver crash or SIGTERM during 
     return { exited, exitMs, mapAnswered, graphPids, survivors };
   }
 
-  it("the stdio entry exits 1 on a Prolog trap and leaves no graph process", async () => {
+  it("the stdio entry, solving inline, exits 1 on a Prolog trap and leaves no graph process", async () => {
     const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-stdio-graph-"));
-    const entry = startEntry(home);
+    const entry = startEntry(home, "mcp-server.ts", [], INLINE_SOLVERS);
     try {
       const caller = stdioCaller(entry);
       const run = await stopDuringGraphJob(entry, caller, () => {
@@ -444,9 +557,9 @@ describe.skipIf(process.platform === "win32")("a solver crash or SIGTERM during 
     }
   }, 120_000);
 
-  it("the HTTP entry exits 1 on a Z3 trap and leaves no graph process", async () => {
+  it("the HTTP entry, solving inline, exits 1 on a Z3 trap and leaves no graph process", async () => {
     const home = await mkdtemp(join(tmpdir(), "chiasmus-entry-http-graph-"));
-    const entry = await startHttpEntry(home);
+    const entry = await startHttpEntry(home, INLINE_SOLVERS);
     try {
       const run = await stopDuringGraphJob(entry, entry, () => {
         void entry.call("chiasmus_verify", { solver: "z3", input: Z3_TRAP }).catch(() => undefined);
