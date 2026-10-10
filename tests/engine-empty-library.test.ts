@@ -1,20 +1,19 @@
 import { describe, it, expect } from "vitest";
 import { FormalizationEngine } from "../src/formalize/engine.js";
-import type { SkillLibrary } from "../src/skills/library.js";
+import type { FormalizationLibrary } from "../src/formalize/engine.js";
 import { MockLLMAdapter } from "../src/llm/mock.js";
 
-function makeEmptyLibrary(): SkillLibrary {
+// SkillLibrary.create always seeds the starter templates, so a library with
+// no templates has to be a stand-in. It is typed as the slice of
+// SkillLibrary the engine uses, with no cast: the compiler rejects it when
+// that slice changes, and the rest of SkillLibrary can change freely.
+function makeEmptyLibrary(): FormalizationLibrary {
   return {
     search: () => [],
     list: () => [],
-    get: () => null,
-    getRelated: () => [],
-    addTemplate: () => false,
-    remove: () => {},
+    getTemplateSearchText: () => "",
     recordUse: () => {},
-    getMetadata: () => null,
-    close: () => {},
-  } as unknown as SkillLibrary;
+  };
 }
 
 describe("FormalizationEngine", () => {
