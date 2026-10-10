@@ -195,7 +195,7 @@ describe("SkillLibrary", () => {
     };
 
     it("persists learned templates across library instances", async () => {
-      const added = library.addLearned(learnedTemplate);
+      const added = library.addTemplate(learnedTemplate);
       expect(added).toBe(true);
       library.close();
 
@@ -213,7 +213,7 @@ describe("SkillLibrary", () => {
     });
 
     it("opens a database whose rows carry the promoted column of older versions", async () => {
-      library.addLearned(learnedTemplate);
+      library.addTemplate(learnedTemplate);
       library.close();
 
       // Older versions wrote promoted = 1 on a template they promoted. The
@@ -238,7 +238,7 @@ describe("SkillLibrary", () => {
     });
 
     it("remove() deletes the template from disk", async () => {
-      library.addLearned(learnedTemplate);
+      library.addTemplate(learnedTemplate);
       library.remove("test-learned-template");
       library.close();
 
@@ -248,7 +248,7 @@ describe("SkillLibrary", () => {
     });
 
     it("reloaded templates are searchable", async () => {
-      library.addLearned(learnedTemplate);
+      library.addTemplate(learnedTemplate);
       library.close();
 
       const library2 = await SkillLibrary.create(tempDir);

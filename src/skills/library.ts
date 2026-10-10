@@ -227,8 +227,8 @@ export class SkillLibrary {
     return this.loadMetadata(name);
   }
 
-  /** Add a learned (candidate) template to the library. Returns false if name already exists. */
-  addLearned(template: SkillTemplate): boolean {
+  /** Add a template to the library and persist it. Returns false if the name already exists. */
+  addTemplate(template: SkillTemplate): boolean {
     if (this.templates.has(template.name)) {
       return false;
     }

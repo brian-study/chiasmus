@@ -144,7 +144,7 @@ export async function craftTemplate(
     }
   }
 
-  const added = library.addLearned(template);
+  const added = library.addTemplate(template);
   if (!added) {
     return { created: false, errors: [`Failed to add template "${input.name}" to library`] };
   }
