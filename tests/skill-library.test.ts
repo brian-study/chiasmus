@@ -217,8 +217,8 @@ describe("SkillLibrary", () => {
       library.close();
 
       // Older versions wrote promoted = 1 on a template they promoted. The
-      // column stays in the schema so such a file still opens and new rows
-      // still satisfy its NOT NULL; the value is not read or reported.
+      // column stays in the schema, such a file still opens, and the value
+      // is not read or reported.
       const db = new Database(join(tempDir, "chiasmus.db"));
       try {
         const columns = (db.prepare("PRAGMA table_info(skill_metadata)").all() as Array<{ name: string }>)
@@ -235,6 +235,22 @@ describe("SkillLibrary", () => {
       expect(result!.template.skeleton).toBe(learnedTemplate.skeleton);
       expect(result!.metadata).not.toHaveProperty("promoted");
       library2.close();
+    });
+
+    it("writes no promoted value: the rows it creates carry the column default", () => {
+      library.addTemplate(learnedTemplate);
+      library.close();
+
+      const db = new Database(join(tempDir, "chiasmus.db"));
+      try {
+        const rows = db
+          .prepare("SELECT name, promoted FROM skill_metadata")
+          .all() as Array<{ name: string; promoted: number }>;
+        expect(rows.length).toBe(STARTER_TEMPLATES.length + 1);
+        expect(rows.filter((r) => r.promoted !== 0)).toEqual([]);
+      } finally {
+        db.close();
+      }
     });
 
     it("remove() deletes the template from disk", async () => {

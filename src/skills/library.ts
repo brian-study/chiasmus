@@ -63,9 +63,11 @@ export class SkillLibrary {
     try {
       db.pragma("journal_mode = WAL");
 
-      // The `promoted` column is written and never read: no code promotes
-      // a template. It stays in the schema, and the INSERTs fill it, so a
-      // database created by a version that used it opens unchanged.
+      // `promoted` is neither read nor written here: no code promotes a
+      // template. It stays in the DDL so that every database has the one
+      // schema: files created by earlier versions have the column, and an
+      // earlier release opening a file created by this one reads it and
+      // names it in its INSERTs. DEFAULT 0 fills it on the rows added here.
       db.exec(`
         CREATE TABLE IF NOT EXISTS skill_metadata (
           name TEXT PRIMARY KEY,
@@ -93,8 +95,8 @@ export class SkillLibrary {
       // Load starter templates and ensure metadata rows exist
       const templates = new Map<string, SkillTemplate>();
       const upsert = db.prepare(`
-        INSERT INTO skill_metadata (name, promoted)
-        VALUES (?, 1)
+        INSERT INTO skill_metadata (name)
+        VALUES (?)
         ON CONFLICT(name) DO NOTHING
       `);
 
@@ -265,8 +267,8 @@ export class SkillLibrary {
 
       this.db
         .prepare(
-          `INSERT INTO skill_metadata (name, promoted)
-           VALUES (?, 0)
+          `INSERT INTO skill_metadata (name)
+           VALUES (?)
            ON CONFLICT(name) DO NOTHING`
         )
         .run(template.name);
