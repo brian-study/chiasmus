@@ -108,7 +108,6 @@ metadata:
   reuse_count: 0
   success_rate: 0.0
   last_used: null
-  promoted: false
 ```
 
 ### Starter Templates (Ship With These)
@@ -227,7 +226,7 @@ Directory structure:
 ├── skills/
 │   ├── z3/                  # Z3 templates (.smt2.tmpl)
 │   ├── prolog/              # Prolog templates (.pl.tmpl)
-│   └── learned/             # Auto-extracted candidates, not yet promoted
+│   └── learned/             # Auto-extracted candidates
 └── sessions/                # Ephemeral session state (checkpoints)
 ```
 
