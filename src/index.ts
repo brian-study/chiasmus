@@ -9,7 +9,7 @@ export type { CodeGraph, DefinesFact, CallsFact, ImportsFact, ExportsFact, Conta
 export { lintSpec, classifyFeedback, extractPrologQuery, FormalizationEngine } from "./formalize/index.js";
 export type { LintResult, FormalizeResult, SolveResult } from "./formalize/index.js";
 
-export { SkillLibrary, SkillLearner, craftTemplate, validateTemplate } from "./skills/index.js";
+export { SkillLibrary, craftTemplate, validateTemplate } from "./skills/index.js";
 export type { SearchOptions, CraftInput, CraftResult, SkillTemplate, SlotDef, Normalization, SkillMetadata, SkillWithMetadata, SkillSearchResult } from "./skills/index.js";
 
 export { createLLMFromEnv, createEmbeddingFromEnv, AnthropicAdapter, OpenAICompatibleAdapter, OpenAICompatibleEmbeddingAdapter, MockEmbeddingAdapter } from "./llm/index.js";
