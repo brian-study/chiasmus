@@ -240,4 +240,53 @@ describe("craftTemplate", () => {
     library = await SkillLibrary.create(tempDir);
     expect(library.get("test-template")!.template).toEqual(running);
   });
+
+  it("says the name is taken on disk when another process sharing the directory stored it", async () => {
+    // A second process stores the name after this instance loaded, so the
+    // name is on disk but not in this instance, and validation here passes.
+    const other = await SkillLibrary.create(tempDir);
+    try {
+      expect((await craftTemplate(validInput(), other)).created).toBe(true);
+    } finally {
+      other.close();
+    }
+
+    const result = await craftTemplate(
+      validInput({ signature: "a second definition under the taken name" }),
+      library,
+    );
+
+    expect(result.created).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors![0]).toContain('"test-template"');
+    expect(result.errors![0]).toContain("already taken on disk");
+    expect(result.errors![0]).toContain("restart");
+    expect(library.get("test-template")).toBeNull();
+  });
+
+  it("says the template already exists when this instance added the name after validation", async () => {
+    // Both calls validate before either adds: each waits on its solver run
+    // first. The one that adds second is refused for a name held in memory.
+    const tested = () =>
+      craftTemplate(
+        validInput({
+          solver: "prolog",
+          skeleton: "{{SLOT:facts}}\n{{SLOT:rules}}",
+          slots: [
+            { name: "facts", description: "Facts", format: "parent(tom, bob)." },
+            { name: "rules", description: "Rules", format: "ancestor(X,Y) :- parent(X,Y)." },
+          ],
+          example: "parent(tom, bob).\n?- parent(tom, X).",
+          test: true,
+        }),
+        library,
+      );
+
+    const results = await Promise.all([tested(), tested()]);
+
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    const refused = results.find((r) => !r.created)!;
+    expect(refused.errors).toEqual(['Template "test-template" already exists in library']);
+    expect(library.get("test-template")).not.toBeNull();
+  });
 });

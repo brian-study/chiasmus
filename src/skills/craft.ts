@@ -163,7 +163,14 @@ export async function craftTemplate(
 
   const added = library.addTemplate(template);
   if (!added) {
-    return { created: false, errors: [`Failed to add template "${input.name}" to library`] };
+    // addTemplate answers false for a taken name wherever the name is held,
+    // and validation above leaves a taken name as its only reason to refuse.
+    // A name this instance holds was added here after validation, while the
+    // example was being tested. One it does not hold is on disk only.
+    const reason = library.get(input.name)
+      ? `Template "${input.name}" already exists in library`
+      : `Template name "${input.name}" is already taken on disk: another process sharing this library's directory stored it, and this instance sees it after a restart`;
+    return { created: false, errors: [reason] };
   }
 
   return {
