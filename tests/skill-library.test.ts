@@ -212,6 +212,17 @@ describe("SkillLibrary", () => {
       library2.close();
     });
 
+    it("keeps addLearned, the former name of addTemplate, working for existing callers", async () => {
+      expect(library.addLearned(learnedTemplate)).toBe(true);
+      expect(library.get("test-learned-template")!.template.skeleton).toBe(learnedTemplate.skeleton);
+      expect(library.addLearned(learnedTemplate)).toBe(false);
+      library.close();
+
+      const library2 = await SkillLibrary.create(tempDir);
+      expect(library2.get("test-learned-template")).not.toBeNull();
+      library2.close();
+    });
+
     it("opens a database whose rows carry the promoted column of older versions", async () => {
       library.addTemplate(learnedTemplate);
       library.close();

@@ -298,6 +298,11 @@ export class SkillLibrary {
     return true;
   }
 
+  /** @deprecated The former name of {@link SkillLibrary.addTemplate}; call that instead. */
+  addLearned(template: SkillTemplate): boolean {
+    return this.addTemplate(template);
+  }
+
   /** Remove a template from the library */
   remove(name: string): void {
     this.templates.delete(name);
