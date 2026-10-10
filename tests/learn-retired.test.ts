@@ -64,7 +64,7 @@ describe("chiasmus_learn is retired", () => {
     expect(names).toContain("chiasmus_craft");
   });
 
-  it("answers a call by name as an unknown tool and stores nothing", async () => {
+  it("answers a call by name with a notice naming chiasmus_craft and stores nothing", async () => {
     const { client, library } = await connect();
     const before = library.list().length;
 
@@ -82,7 +82,10 @@ describe("chiasmus_learn is retired", () => {
       },
     });
     const text = (result.content as Array<{ type: string; text: string }>)[0].text;
-    expect(JSON.parse(text)).toEqual({ status: "error", error: "Unknown tool: chiasmus_learn" });
+    expect(JSON.parse(text)).toEqual({
+      status: "error",
+      error: "chiasmus_learn was retired; use chiasmus_craft",
+    });
 
     expect(library.list().length).toBe(before);
     expect(library.get("three-edge-cycle")).toBeNull();

@@ -1012,6 +1012,20 @@ export async function createChiasmusServer(
         });
       case "chiasmus_search":
         return handleSearch(embedding, embeddingHome, args ?? {});
+      // Not in the tool list. A client that still has the name from an older
+      // version is told where template creation went; nothing is stored.
+      case "chiasmus_learn":
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                status: "error",
+                error: "chiasmus_learn was retired; use chiasmus_craft",
+              }),
+            },
+          ],
+        };
       default:
         return {
           content: [
