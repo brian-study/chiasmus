@@ -132,8 +132,11 @@ export async function craftTemplate(
     skeleton: input.skeleton,
     slots: input.slots as SlotDef[],
     normalizations: input.normalizations as Normalization[],
-    tips: input.tips,
-    example: input.example,
+    // validateTemplate lets null through as absent, and the library stores
+    // an absent field as NULL and loads it back as undefined. Fold null here
+    // so this instance serves what a reopened library does.
+    tips: input.tips ?? undefined,
+    example: input.example ?? undefined,
   };
 
   // Optional: test the example through the solver

@@ -221,4 +221,23 @@ describe("craftTemplate", () => {
     expect(result.errors!.some((e) => e.includes("'tips'"))).toBe(true);
     expect(library.get("test-template")).toBeNull();
   });
+
+  it("null example and tips are stored as absent, the same as a reopened library serves them", async () => {
+    const result = await craftTemplate(
+      validInput({
+        example: null as unknown as undefined,
+        tips: null as unknown as undefined,
+      }),
+      library,
+    );
+    expect(result.created).toBe(true);
+
+    const running = library.get("test-template")!.template;
+    expect(running.example).toBeUndefined();
+    expect(running.tips).toBeUndefined();
+
+    library.close();
+    library = await SkillLibrary.create(tempDir);
+    expect(library.get("test-template")!.template).toEqual(running);
+  });
 });
