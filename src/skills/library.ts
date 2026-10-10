@@ -19,6 +19,13 @@ export interface SearchOptions {
   limit?: number;
 }
 
+/**
+ * Ensures a template has its metadata row and leaves an existing row's
+ * counters alone. Run for each starter at load and for each added template.
+ */
+const ENSURE_METADATA_ROW_SQL =
+  "INSERT INTO skill_metadata (name) VALUES (?) ON CONFLICT(name) DO NOTHING";
+
 export class SkillLibrary {
   private db: Database.Database;
   private templates: Map<string, SkillTemplate>;
@@ -94,11 +101,7 @@ export class SkillLibrary {
 
       // Load starter templates and ensure metadata rows exist
       const templates = new Map<string, SkillTemplate>();
-      const upsert = db.prepare(`
-        INSERT INTO skill_metadata (name)
-        VALUES (?)
-        ON CONFLICT(name) DO NOTHING
-      `);
+      const upsert = db.prepare(ENSURE_METADATA_ROW_SQL);
 
       for (const t of STARTER_TEMPLATES) {
         templates.set(t.name, t);
@@ -265,13 +268,7 @@ export class SkillLibrary {
         );
       if (inserted.changes !== 1) return false;
 
-      this.db
-        .prepare(
-          `INSERT INTO skill_metadata (name)
-           VALUES (?)
-           ON CONFLICT(name) DO NOTHING`
-        )
-        .run(template.name);
+      this.db.prepare(ENSURE_METADATA_ROW_SQL).run(template.name);
       return true;
     });
 
