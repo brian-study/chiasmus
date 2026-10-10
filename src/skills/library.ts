@@ -47,7 +47,6 @@ export class SkillLibrary {
         reuseCount: row.reuse_count,
         successCount: row.success_count,
         lastUsed: row.last_used,
-        promoted: !!row.promoted,
       });
     }
   }
@@ -64,6 +63,9 @@ export class SkillLibrary {
     try {
       db.pragma("journal_mode = WAL");
 
+      // The `promoted` column is written and never read: no code promotes
+      // a template. It stays in the schema, and the INSERTs fill it, so a
+      // database created by a version that used it opens unchanged.
       db.exec(`
         CREATE TABLE IF NOT EXISTS skill_metadata (
           name TEXT PRIMARY KEY,
@@ -268,7 +270,6 @@ export class SkillLibrary {
         reuseCount: 0,
         successCount: 0,
         lastUsed: null,
-        promoted: false,
       });
     }
 
@@ -278,18 +279,6 @@ export class SkillLibrary {
     addToIndex(this.searchIndex, searchText);
 
     return true;
-  }
-
-  /** Promote a candidate template to full status */
-  promote(name: string): void {
-    this.db
-      .prepare("UPDATE skill_metadata SET promoted = 1 WHERE name = ?")
-      .run(name);
-
-    const existing = this.metadataCache.get(name);
-    if (existing) {
-      existing.promoted = true;
-    }
   }
 
   /** Remove a template from the library */
@@ -321,7 +310,6 @@ export class SkillLibrary {
       reuseCount: 0,
       successCount: 0,
       lastUsed: null,
-      promoted: false,
     };
   }
 }

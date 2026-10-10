@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import Database from "better-sqlite3";
 import { SkillLibrary } from "../src/skills/library.js";
 import { STARTER_TEMPLATES } from "../src/skills/starters.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -31,7 +32,7 @@ describe("SkillLibrary", () => {
         expect(item.metadata.reuseCount).toBe(0);
         expect(item.metadata.successCount).toBe(0);
         expect(item.metadata.lastUsed).toBeNull();
-        expect(item.metadata.promoted).toBe(true); // starters are pre-promoted
+        expect(item.metadata).not.toHaveProperty("promoted");
       }
     });
   });
@@ -207,19 +208,32 @@ describe("SkillLibrary", () => {
       expect(result!.template.normalizations).toEqual(learnedTemplate.normalizations);
       expect(result!.template.tips).toEqual(learnedTemplate.tips);
       expect(result!.template.example).toBe(learnedTemplate.example);
-      expect(result!.metadata.promoted).toBe(false);
+      expect(result!.metadata).not.toHaveProperty("promoted");
       library2.close();
     });
 
-    it("persists promoted state across library instances", async () => {
+    it("opens a database whose rows carry the promoted column of older versions", async () => {
       library.addLearned(learnedTemplate);
-      library.promote("test-learned-template");
       library.close();
+
+      // Older versions wrote promoted = 1 on a template they promoted. The
+      // column stays in the schema so such a file still opens and new rows
+      // still satisfy its NOT NULL; the value is not read or reported.
+      const db = new Database(join(tempDir, "chiasmus.db"));
+      try {
+        const columns = (db.prepare("PRAGMA table_info(skill_metadata)").all() as Array<{ name: string }>)
+          .map((c) => c.name);
+        expect(columns).toContain("promoted");
+        db.prepare("UPDATE skill_metadata SET promoted = 1 WHERE name = ?").run("test-learned-template");
+      } finally {
+        db.close();
+      }
 
       const library2 = await SkillLibrary.create(tempDir);
       const result = library2.get("test-learned-template");
       expect(result).not.toBeNull();
-      expect(result!.metadata.promoted).toBe(true);
+      expect(result!.template.skeleton).toBe(learnedTemplate.skeleton);
+      expect(result!.metadata).not.toHaveProperty("promoted");
       library2.close();
     });
 

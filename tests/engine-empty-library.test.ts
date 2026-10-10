@@ -10,7 +10,6 @@ function makeEmptyLibrary(): SkillLibrary {
     get: () => null,
     getRelated: () => [],
     addLearned: () => false,
-    promote: () => {},
     remove: () => {},
     recordUse: () => {},
     getMetadata: () => null,
