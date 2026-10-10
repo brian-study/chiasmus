@@ -94,6 +94,37 @@ describe("validateTemplate", () => {
     const errors = validateTemplate(validInput({ normalizations: [] }), library);
     expect(errors.some((e) => e.includes("normalizations") && e.includes("non-empty"))).toBe(true);
   });
+
+  it("non-string example returns error", () => {
+    for (const example of [{ text: "(assert true)" }, ["(assert true)"], 42, true]) {
+      const errors = validateTemplate(
+        validInput({ example: example as unknown as string }),
+        library,
+      );
+      expect(errors.some((e) => e.includes("'example'")), JSON.stringify(example)).toBe(true);
+    }
+  });
+
+  it("tips that is not an array of strings returns error", () => {
+    for (const tips of ["one tip", [1, 2], [["nested"]], ["ok", null], { 0: "tip" }]) {
+      const errors = validateTemplate(
+        validInput({ tips: tips as unknown as string[] }),
+        library,
+      );
+      expect(errors.some((e) => e.includes("'tips'")), JSON.stringify(tips)).toBe(true);
+    }
+  });
+
+  it("string example and string tips pass, and null counts as absent", () => {
+    const given = validInput({ example: "(assert true)", tips: ["declare before use"] });
+    expect(validateTemplate(given, library)).toHaveLength(0);
+
+    const nulls = validInput({
+      example: null as unknown as undefined,
+      tips: null as unknown as undefined,
+    });
+    expect(validateTemplate(nulls, library)).toHaveLength(0);
+  });
 });
 
 describe("craftTemplate", () => {
@@ -167,5 +198,27 @@ describe("craftTemplate", () => {
     const result = await craftTemplate(validInput({ solver: "invalid" }), library);
     expect(result.created).toBe(false);
     expect(result.errors!.length).toBeGreaterThan(0);
+  });
+
+  it("non-string example is a validation error, not a thrown bind error", async () => {
+    const result = await craftTemplate(
+      validInput({ example: { text: "(assert true)" } as unknown as string }),
+      library,
+    );
+
+    expect(result.created).toBe(false);
+    expect(result.errors!.some((e) => e.includes("'example'"))).toBe(true);
+    expect(library.get("test-template")).toBeNull();
+  });
+
+  it("tips that is not an array of strings is a validation error and stores nothing", async () => {
+    const result = await craftTemplate(
+      validInput({ tips: "one tip" as unknown as string[] }),
+      library,
+    );
+
+    expect(result.created).toBe(false);
+    expect(result.errors!.some((e) => e.includes("'tips'"))).toBe(true);
+    expect(library.get("test-template")).toBeNull();
   });
 });

@@ -78,6 +78,20 @@ export function validateTemplate(input: CraftInput, library: SkillLibrary): stri
     }
   }
 
+  // Optional fields. The library binds `example` to a TEXT column and
+  // stores `tips` as JSON that formalize later maps over as strings, so any
+  // other shape is refused here instead of failing at the insert or at use.
+  // null counts as absent: JSON callers send it for an omitted field.
+  if (input.example != null && typeof input.example !== "string") {
+    errors.push("'example' must be a string when given");
+  }
+  if (
+    input.tips != null &&
+    !(Array.isArray(input.tips) && input.tips.every((t) => typeof t === "string"))
+  ) {
+    errors.push("'tips' must be an array of strings when given");
+  }
+
   // Cross-validate skeleton slots vs slot definitions
   if (typeof input.skeleton === "string" && Array.isArray(input.slots)) {
     const skeletonSlots = new Set(

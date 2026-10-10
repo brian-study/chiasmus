@@ -227,42 +227,57 @@ export class SkillLibrary {
     return this.loadMetadata(name);
   }
 
-  /** Add a template to the library and persist it. Returns false if the name already exists. */
+  /**
+   * Add a template to the library and persist it. Returns false, and adds
+   * nothing, if the name is already taken in memory or on disk.
+   */
   addTemplate(template: SkillTemplate): boolean {
     if (this.templates.has(template.name)) {
       return false;
     }
 
+    // Disk first, memory second: the template is added in memory only once
+    // its row is written, so what this instance serves is what a restart
+    // loads. The two writes share a transaction, so a failure of either
+    // leaves no row behind, and the throw leaves memory as it was.
+    const persist = this.db.transaction((): boolean => {
+      // INSERT OR IGNORE never clobbers a row that is on disk but not in
+      // this instance (another process sharing the directory wrote it);
+      // `changes` then reports 0 and nothing is added.
+      const inserted = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO skill_templates
+           (name, domain, solver, signature, skeleton, slots, normalizations, tips, example)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          template.name,
+          template.domain,
+          template.solver,
+          template.signature,
+          template.skeleton,
+          JSON.stringify(template.slots),
+          JSON.stringify(template.normalizations),
+          template.tips ? JSON.stringify(template.tips) : null,
+          template.example ?? null,
+        );
+      if (inserted.changes !== 1) return false;
+
+      this.db
+        .prepare(
+          `INSERT INTO skill_metadata (name, promoted)
+           VALUES (?, 0)
+           ON CONFLICT(name) DO NOTHING`
+        )
+        .run(template.name);
+      return true;
+    });
+
+    if (!persist()) {
+      return false;
+    }
+
     this.templates.set(template.name, template);
-
-    // Persist template definition so it survives restarts. Use INSERT OR IGNORE
-    // so we never clobber an existing row if the disk and in-memory state
-    // somehow diverge.
-    this.db
-      .prepare(
-        `INSERT OR IGNORE INTO skill_templates
-         (name, domain, solver, signature, skeleton, slots, normalizations, tips, example)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        template.name,
-        template.domain,
-        template.solver,
-        template.signature,
-        template.skeleton,
-        JSON.stringify(template.slots),
-        JSON.stringify(template.normalizations),
-        template.tips ? JSON.stringify(template.tips) : null,
-        template.example ?? null,
-      );
-
-    this.db
-      .prepare(
-        `INSERT INTO skill_metadata (name, promoted)
-         VALUES (?, 0)
-         ON CONFLICT(name) DO NOTHING`
-      )
-      .run(template.name);
 
     if (!this.metadataCache.has(template.name)) {
       this.metadataCache.set(template.name, {
