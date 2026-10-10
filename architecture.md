@@ -137,6 +137,8 @@ Solved problem
   → Before adding: check embedding similarity against existing (merge if >0.9)
 ```
 
+Retired: the `chiasmus_learn` tool that ran this lifecycle stored whatever template its LLM returned, with no check that the template still expressed the solved spec, and `chiasmus_formalize`/`chiasmus_solve` selected the new template at once whether or not it was promoted. New templates are added through `chiasmus_craft`, which validates them.
+
 Lessons from LEGO-Prover (ICLR 2024): their library grew to 20,000+ skills but a 2025 analysis found most were single-use. We track reuse rigorously and prune aggressively. 50 well-validated templates beat 5,000 cached one-offs.
 
 ### Normalization Layer (Transfer Learning)
@@ -158,7 +160,6 @@ New normalization patterns discovered during use get saved back to the template,
 | `chiasmus_formalize` | Find template + return slot-filling instructions for the calling LLM | No* |
 | `chiasmus_craft` | Create a new template (LLM-designed, validated server-side) | No |
 | `chiasmus_skills` | Search/list templates in the skill library | No |
-| `chiasmus_learn` | Extract a new candidate skill from a verified solution | Yes |
 | `chiasmus_lint` | Fast structural validation without running the solver | No |
 | `chiasmus_graph` | Source-code call-graph analysis (16 analyses incl. communities, hubs, bridges, diff, entry-points). TS/JS emits `calleeQN` + `imports.resolved` when inferable. | No |
 | `chiasmus_map` | Pre-built codebase outline for pre-read agent context (overview / file / symbol) | No |

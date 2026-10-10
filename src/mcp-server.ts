@@ -15,7 +15,6 @@ import { SolverSession } from "./solvers/session.js";
 import { exitOnFatalSolverError } from "./solvers/fatal.js";
 import { SkillLibrary } from "./skills/library.js";
 import { FormalizationEngine } from "./formalize/engine.js";
-import { SkillLearner } from "./skills/learner.js";
 import { lintSpec } from "./formalize/validate.js";
 import { createLLMFromEnv, createEmbeddingFromEnv } from "./llm/anthropic.js";
 import type { EmbeddingAdapter, LLMAdapter } from "./llm/types.js";
@@ -181,32 +180,6 @@ Returns: solver result + template used + correction history. NOTE: \`converged: 
         },
       },
       required: ["problem"],
-    },
-  },
-  {
-    name: "chiasmus_learn",
-    description: `Extract reusable template from verified solution → add to skill library.
-
-Generalizes concrete spec into parameterized template. Stored as candidate → promoted after 3+ successful reuses.
-Needs API key. Flow: chiasmus_verify → chiasmus_learn → template appears in chiasmus_skills.`,
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        solver: {
-          type: "string",
-          enum: ["z3", "prolog"],
-          description: "Which solver was used for the verified spec",
-        },
-        spec: {
-          type: "string",
-          description: "The verified formal specification to generalize",
-        },
-        problem: {
-          type: "string",
-          description: "Natural language description of the problem that was solved",
-        },
-      },
-      required: ["solver", "spec", "problem"],
     },
   },
   {
@@ -750,69 +723,6 @@ async function handleSolve(
   };
 }
 
-async function handleLearn(
-  learner: SkillLearner | null,
-  args: Record<string, unknown>,
-): Promise<CallToolResult> {
-  if (!learner) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({
-        error: "No ANTHROPIC_API_KEY set. chiasmus_learn requires an LLM for template extraction.",
-      }) }],
-    };
-  }
-
-  if (
-    typeof args.solver !== "string" ||
-    typeof args.spec !== "string" ||
-    typeof args.problem !== "string" ||
-    !args.solver || !args.spec || !args.problem
-  ) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({
-        error: "Required parameters: solver (string), spec (string), problem (string)",
-      }) }],
-    };
-  }
-
-  const solver = args.solver;
-  const spec = args.spec;
-  const problem = args.problem;
-
-  if (solver !== "z3" && solver !== "prolog") {
-    return {
-      content: [{ type: "text", text: JSON.stringify({
-        error: `Unknown solver: ${solver}. Use "z3" or "prolog".`,
-      }) }],
-    };
-  }
-
-  const result = await learner.extractTemplate(solver, spec, problem);
-  if (!result) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({
-        extracted: false,
-        reason: "Template was rejected — either invalid, too similar to an existing template, or LLM produced unparseable output",
-      }) }],
-    };
-  }
-
-  // Check promotions after learning
-  learner.checkPromotions();
-
-  return {
-    content: [{ type: "text", text: JSON.stringify({
-      extracted: true,
-      template: result.name,
-      domain: result.domain,
-      solver: result.solver,
-      signature: result.signature,
-      slots: result.slots.length,
-      promoted: false,
-    }, null, 2) }],
-  };
-}
-
 function handleLint(args: Record<string, unknown>): CallToolResult {
   const solver = args.solver;
   const input = args.input;
@@ -1050,7 +960,6 @@ export async function createChiasmusServer(
   const embedding =
     embeddingOverride !== undefined ? embeddingOverride : createEmbeddingFromEnv(config, home);
   const formalizer = llm ? new FormalizationEngine(library, llm, embedding ?? undefined) : null;
-  const learner = llm ? new SkillLearner(library, llm) : null;
   const embeddingHome = home;
 
   const server = new Server(
@@ -1063,11 +972,9 @@ export async function createChiasmusServer(
     // model shouldn't be offered a tool that can only return a "not
     // configured" error. Tools that degrade gracefully stay listed:
     // chiasmus_solve/chiasmus_formalize fall back to template mode without
-    // an LLM, so only chiasmus_learn (LLM-only) and chiasmus_search
-    // (embedding-only) are gated.
+    // an LLM, so only chiasmus_search (embedding-only) is gated.
     tools: TOOLS.filter((t) => {
       if (t.name === "chiasmus_search") return embedding !== null;
-      if (t.name === "chiasmus_learn") return llm !== null;
       return true;
     }),
   }));
@@ -1089,8 +996,6 @@ export async function createChiasmusServer(
         return handleFormalize(formalizeEngine, library, args ?? {});
       case "chiasmus_solve":
         return handleSolve(formalizer, library, args ?? {}, embedding);
-      case "chiasmus_learn":
-        return handleLearn(learner, args ?? {});
       case "chiasmus_lint":
         return handleLint(args ?? {});
       case "chiasmus_graph":

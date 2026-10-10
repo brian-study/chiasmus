@@ -56,11 +56,6 @@ describe("MCP tool gating by configured capability", () => {
     expect(names).toContain("chiasmus_search");
   });
 
-  it("hides chiasmus_learn when no LLM is configured", async () => {
-    const names = await listToolNames(null, new MockEmbeddingAdapter({ dimension: 8 }));
-    expect(names).not.toContain("chiasmus_learn");
-  });
-
   it("keeps gracefully-degrading tools (solve, formalize) listed without an LLM", async () => {
     const names = await listToolNames(null, new MockEmbeddingAdapter({ dimension: 8 }));
     expect(names).toContain("chiasmus_solve");
