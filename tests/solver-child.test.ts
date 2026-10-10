@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createChiasmusServer } from "../src/mcp-server.js";
 import { SolverSession } from "../src/solvers/session.js";
 import { setFatalSolverErrorHandler } from "../src/solvers/fatal.js";
-import { SolverChildPool, getSolverChildPool, shutdownSolverChildren } from "../src/solvers/child-pool.js";
+import { MAX_RESULT_CHARS, SolverChildPool, capResults, getSolverChildPool, shutdownSolverChildren } from "../src/solvers/child-pool.js";
 import type { SolverInput, SolverResult } from "../src/solvers/types.js";
 
 // SolverSession runs each solve in a child process, one per solver, so a
@@ -189,6 +189,74 @@ describe("SolverSession in a solver child process", () => {
       error: "z3 solver worker crashed while running z3 solve: killed by SIGKILL",
     }]);
   }, 60_000);
+
+  // A short query can produce an answer of any size: 100M characters made
+  // the server hold 1.8 GB and stall for 0.7 s to pass on a 200 MB response
+  // no client can use.
+  it("refuses a result over the size cap instead of sending it to the server", async () => {
+    const big = `format(atom(A), '~*c', [${11 * 1024 * 1024}, 97]).`;
+    const tooBig = await prolog(big);
+    const after = await prolog("p(X).");
+
+    expect(tooBig.status).toBe("error");
+    if (tooBig.status === "error") {
+      expect(tooBig.error).toMatch(/^The result is \d+ characters of JSON, over the 10485760 cap/);
+    }
+    expect(after.status).toBe("success");
+  }, 60_000);
+
+  it("drops only the oversized results of a batch, so the others still arrive", async () => {
+    const session = await SolverSession.create("prolog");
+    try {
+      const results = await session.solveBatch({
+        type: "prolog",
+        program: "p(1).",
+        queries: ["p(X).", `format(atom(A), '~*c', [${11 * 1024 * 1024}, 97]).`, "p(Y)."],
+      });
+      expect(results.map((r) => r.status)).toEqual(["success", "error", "success"]);
+    } finally {
+      session.dispose();
+    }
+  }, 60_000);
+
+  it("counts a result JSON can't serialize as over the cap, and keeps the others", () => {
+    const ok: SolverResult = { status: "success", answers: [{ bindings: { X: "1" }, formatted: "X = 1" }] };
+    const unserializable = { status: "sat", model: { x: 1n } } as unknown as SolverResult;
+    const big: SolverResult = { status: "sat", model: { x: "1".repeat(MAX_RESULT_CHARS) } };
+
+    const capped = capResults([ok, unserializable, ok, big, ok]);
+
+    expect(capped.map((r) => r.status)).toEqual(["success", "error", "success", "error", "success"]);
+    expect(capped[1]).toMatchObject({ error: expect.stringMatching(/^The result is more than 512M characters/) });
+  });
+
+  it("says so when a result under the cap is cut because the batch as a whole is over it", () => {
+    const smaller: SolverResult = { status: "sat", model: { x: "1".repeat(MAX_RESULT_CHARS * 0.55) } };
+    const larger: SolverResult = { status: "sat", model: { x: "1".repeat(MAX_RESULT_CHARS * 0.6) } };
+
+    const capped = capResults([smaller, larger]);
+
+    expect(capped[0]).toBe(smaller);
+    expect(capped[1]).toMatchObject({
+      status: "error",
+      error: expect.stringMatching(/^The batch's results are \d+ characters of JSON together, over the 10485760 cap; this one \(\d+ characters\) was cut/),
+    });
+  });
+
+  it("answers a batch whose results can't fit even as errors with one error, quickly", () => {
+    const one: SolverResult = { status: "success", answers: [{ bindings: { X: "x".repeat(100) }, formatted: "X = x" }] };
+    const results = Array.from({ length: 90_000 }, () => one);
+
+    const started = performance.now();
+    const capped = capResults(results);
+
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(capped).toEqual([{
+      status: "error",
+      error: expect.stringMatching(/^The 90000 results are \d+ characters of JSON, over the 10485760 cap/),
+    }]);
+    expect(JSON.stringify(capped).length).toBeLessThan(MAX_RESULT_CHARS);
+  });
 
   it("runs solves in this process when CHIASMUS_SOLVER_WORKER=off", async () => {
     const run = vi.spyOn(SolverChildPool.prototype, "run");
