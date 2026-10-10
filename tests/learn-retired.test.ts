@@ -8,11 +8,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// chiasmus_learn stored whatever template the LLM returned for a verified
-// spec, with no check that the template still says what the spec said, and
-// formalize/solve picked it up straight away. It is retired; templates are
-// added through chiasmus_craft, which validates them. These tests hold that
-// no LLM response can reach the library through the old tool name.
+// Invariant: the retired tool name is a dead end. It is absent from the tool
+// list, and a call made by name gets a notice pointing at chiasmus_craft and
+// stores no template, in memory or on disk, whatever the configured LLM
+// would answer.
 describe("chiasmus_learn is retired", () => {
   let tempDir: string;
   let teardown: Array<() => Promise<void> | void> = [];
@@ -27,9 +26,9 @@ describe("chiasmus_learn is retired", () => {
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  // An LLM that answers every prompt with a well-formed template whose
-  // cycle rule only sees two-node cycles, so it never fires on the
-  // three-node graph it was learned from. The learner would have stored it.
+  // An LLM that answers every prompt with a well-formed template. A code
+  // path that still sent the call to the LLM and kept its answer would put
+  // "three-edge-cycle" in the library, which the assertions below look for.
   function templateLLM(): MockLLMAdapter {
     const llm = new MockLLMAdapter();
     llm.onMatch(/./, JSON.stringify({
