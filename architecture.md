@@ -316,19 +316,22 @@ Each phase follows strict TDD: write tests first, verify they fail, implement, v
 
 **Goal:** Extract new templates from verified solutions. Track reuse. Promote/prune over time.
 
+**Status:** the items marked *(retired)* below were removed together with the `chiasmus_learn` tool; the Retired note under [Skill Library Lifecycle](#skill-library-lifecycle) says why. New templates are added through `chiasmus_craft`.
+
 **Delivers:**
-- `chiasmus_learn` MCP tool — extract candidate skill from solution
-- Template abstraction (concrete → parameterized)
-- Normalization schema generation
-- Reuse tracking and promotion logic
+- `chiasmus_learn` MCP tool — extract candidate skill from solution *(retired)*
+- Template abstraction (concrete → parameterized) *(retired)*
+- Normalization schema generation *(retired)*
+- Reuse tracking
+- Promotion logic *(retired)*
 - Pruning of unused/low-quality templates
-- Deduplication (merge if >0.9 embedding similarity)
+- Deduplication (merge if >0.9 embedding similarity) *(retired)*
 
 **Tests:**
-- Solve a novel problem → extract template → solve similar problem using extracted template
+- Solve a novel problem → extract template → solve similar problem using extracted template *(retired)*
 - Reuse counter increments on successful use
-- Template promoted after N successful reuses
-- Duplicate detection prevents near-identical templates
+- Template promoted after N successful reuses *(retired)*
+- Duplicate detection prevents near-identical templates *(retired)*
 - Unused templates decay and get pruned
 
 **Review + Dogfood:** Does the extraction produce genuinely reusable templates, or single-use caches? Test the LEGO-Prover failure mode: after accumulating some learned templates, are they actually being retrieved and reused for new problems?
