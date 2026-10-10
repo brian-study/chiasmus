@@ -42,6 +42,72 @@ export interface SolverJobMessage {
 
 export type SolverChildPoolOptions = ChildPoolOptions;
 
+/**
+ * Most JSON a job's results may take on their way to the server: what the
+ * graph tools' `facts` dump allows too. A short query can produce an answer of
+ * any size (`format(atom(A), '~*c', [100000000, 97])`), and the server holds
+ * every copy it makes of one while passing it on.
+ */
+export const MAX_RESULT_CHARS = 10 * 1024 * 1024;
+
+/** JSON length of a result; Infinity when JSON can't hold it (longer than V8's longest string). */
+function jsonLength(result: SolverResult): number {
+  try {
+    return JSON.stringify(result).length;
+  } catch {
+    return Infinity;
+  }
+}
+
+/**
+ * Swap the largest results for an error until the rest fit, so a batch keeps
+ * one result per query. A batch that can't fit even with an error for each
+ * result it can shorten gets one error, as a crash or a timeout does. Runs in
+ * the child, before a result crosses to the server.
+ */
+export function capResults(results: SolverResult[]): SolverResult[] {
+  const sizes = results.map(jsonLength);
+  let finite = 0;
+  let unbounded = 0;
+  for (const size of sizes) {
+    if (Number.isFinite(size)) finite += size;
+    else unbounded++;
+  }
+  // The array's JSON: its items, a comma between each, two brackets.
+  const fits = () => unbounded === 0 && finite + results.length + 1 <= MAX_RESULT_CHARS;
+  if (fits()) return results;
+
+  const capped = [...results];
+  const largestFirst = sizes.map((_, i) => i).sort((a, b) => (sizes[b] > sizes[a] ? 1 : sizes[b] < sizes[a] ? -1 : 0));
+  const batchTotal = unbounded > 0 ? "more than 512M" : String(finite + results.length + 1);
+  for (const i of largestFirst) {
+    if (fits()) return capped;
+    const shown = Number.isFinite(sizes[i]) ? String(sizes[i]) : "more than 512M";
+    const error: SolverResult = {
+      status: "error",
+      error: (sizes[i] > MAX_RESULT_CHARS
+        ? `The result is ${shown} characters of JSON, over the ${MAX_RESULT_CHARS} cap. `
+        : `The batch's results are ${batchTotal} characters of JSON together, over the ${MAX_RESULT_CHARS} cap; ` +
+          `this one (${shown} characters) was cut to fit the rest. `) +
+        "Ask for fewer or smaller answers.",
+    };
+    const errorLength = JSON.stringify(error).length;
+    // The rest are no longer than the error that would replace them.
+    if (sizes[i] <= errorLength) break;
+    capped[i] = error;
+    if (Number.isFinite(sizes[i])) finite -= sizes[i];
+    else unbounded--;
+    finite += errorLength;
+  }
+  if (fits()) return capped;
+  const total = unbounded > 0 ? "more than 512M" : String(finite + results.length + 1);
+  return [{
+    status: "error",
+    error: `The ${results.length} results are ${total} characters of JSON, over the ${MAX_RESULT_CHARS} cap ` +
+      "even with each oversized one cut to an error. Send fewer queries.",
+  }];
+}
+
 const SOLVER_IDLE_TIMEOUT_MS = 30 * 60_000;
 const SOLVER_MAX_JOBS_PER_CHILD = 1000;
 

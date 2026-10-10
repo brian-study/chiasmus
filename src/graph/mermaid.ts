@@ -83,16 +83,127 @@ function detectDiagramType(lines: string[]): DiagramType {
   return "flowchart"; // default
 }
 
+/** [line, source, source label, arrow, edge label, target, target label] */
+type EdgeMatch = [string, string, string | undefined, string, string | undefined, string, string | undefined];
+
+// What JavaScript's \s matches: WhiteSpace and LineTerminator (ECMA-262),
+// with the Unicode Zs category as of Unicode 15.
+function isWs(code: number): boolean {
+  return (code >= 0x09 && code <= 0x0d) || code === 0x20 || code === 0xa0 || code === 0x1680
+    || (code >= 0x2000 && code <= 0x200a) || code === 0x2028 || code === 0x2029
+    || code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff;
+}
+
+/** What `.` does not match. */
+function isLineTerminator(code: number): boolean {
+  return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+}
+
+function isIdChar(code: number): boolean {
+  return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a)
+    || (code >= 0x61 && code <= 0x7a) || code === 0x5f;
+}
+
+const isOpen = (c: string) => c === "[" || c === "(" || c === "{";
+const isClose = (c: string) => c === "]" || c === ")" || c === "}";
+
+/**
+ * Matches a flowchart edge line the way this pattern did, captures included:
+ *
+ *   ^([A-Za-z0-9_]+)(\s*[\[({].*?[\])}])?\s*([-=][-=.]+[>ox]?)\s*(?:\|([^|]*)\|)?\s*([A-Za-z0-9_]+)(\s*[\[({].*?[\])}])?\s*;?\s*$
+ *
+ * (source, source label, arrow, edge label, target, target label), in time
+ * linear in the line. The pattern backtracked: its adjacent `\s*`s tried
+ * every split of a run of spaces, and the lazy source label tried every
+ * closing bracket as its end, rescanning the rest of the line for each. A few
+ * hundred KB held the server's event loop for minutes. Here the line's tail
+ * (spaces, an optional `;`, spaces) is found once from the right, which fixes
+ * where a target label must end, so each candidate end of the source label is
+ * checked in time proportional to the text up to its target. Returns what
+ * RegExp.exec would, as a plain array. Exported for tests.
+ */
+export function matchFlowchartEdge(line: string): EdgeMatch | null {
+  const n = line.length;
+  const skipWs = (i: number) => {
+    while (i < n && isWs(line.charCodeAt(i))) i++;
+    return i;
+  };
+  const skipId = (i: number) => {
+    while (i < n && isIdChar(line.charCodeAt(i))) i++;
+    return i;
+  };
+
+  // The tail: the shortest suffix of spaces, an optional `;`, then spaces.
+  let tail = n;
+  while (tail > 0 && isWs(line.charCodeAt(tail - 1))) tail--;
+  if (tail > 0 && line[tail - 1] === ";") {
+    tail--;
+    while (tail > 0 && isWs(line.charCodeAt(tail - 1))) tail--;
+  }
+  // A target label can only end just before the tail, and can't span a line
+  // terminator.
+  let lastTerminator = -1;
+  for (let i = 0; i < tail - 1; i++) if (isLineTerminator(line.charCodeAt(i))) lastTerminator = i;
+
+  // Everything after the source (and its label): arrow, edge label, target, target label, tail.
+  const afterSource = (from: number): [string, string | undefined, string, string | undefined] | null => {
+    const a = skipWs(from);
+    if (line[a] !== "-" && line[a] !== "=") return null;
+    let k = a + 1;
+    while (k < n && (line[k] === "-" || line[k] === "=" || line[k] === ".")) k++;
+    if (k === a + 1) return null;
+    // `[>ox]?` takes its character if it can; `o` and `x` can also start the target.
+    const ends = k < n && (line[k] === ">" || line[k] === "o" || line[k] === "x") ? [k + 1, k] : [k];
+    for (const arrowEnd of ends) {
+      const b = skipWs(arrowEnd);
+      let edgeLabel: string | undefined;
+      let targetStart = b;
+      if (line[b] === "|") {
+        const close = line.indexOf("|", b + 1);
+        if (close === -1) continue;
+        edgeLabel = line.slice(b + 1, close);
+        targetStart = skipWs(close + 1);
+      }
+      const targetEnd = skipId(targetStart);
+      if (targetEnd === targetStart) continue;
+      const labelStart = skipWs(targetEnd);
+      let targetLabel: string | undefined;
+      if (
+        labelStart < tail - 1 && isOpen(line[labelStart]) && isClose(line[tail - 1])
+        && lastTerminator < labelStart
+      ) {
+        targetLabel = line.slice(targetEnd, tail);
+      } else if (targetEnd < tail) {
+        continue;
+      }
+      return [line.slice(a, arrowEnd), edgeLabel, line.slice(targetStart, targetEnd), targetLabel];
+    }
+    return null;
+  };
+
+  const sourceEnd = skipId(0);
+  if (sourceEnd === 0) return null;
+  const source = line.slice(0, sourceEnd);
+  const open = skipWs(sourceEnd);
+  if (open < n && isOpen(line[open])) {
+    // The source label ends at the first closing bracket the rest of the line accepts.
+    for (let c = open + 1; c < n && !isLineTerminator(line.charCodeAt(c)); c++) {
+      if (!isClose(line[c])) continue;
+      const rest = afterSource(c + 1);
+      if (rest) return [line, source, line.slice(sourceEnd, c + 1), ...rest];
+    }
+  }
+  const rest = afterSource(sourceEnd);
+  return rest ? [line, source, undefined, ...rest] : null;
+}
+
 function parseFlowchartLine(
   line: string,
   nodes: Map<string, MermaidNode>,
   edges: MermaidEdge[],
 ): void {
-  // Try to match edge pattern
-  // More permissive: extract source, arrow+label, target
-  const parts = line.match(
-    /^([A-Za-z0-9_]+)(\s*[\[({].*?[\])}])?\s*([-=][-=.]+[>ox]?)\s*(?:\|([^|]*)\|)?\s*([A-Za-z0-9_]+)(\s*[\[({].*?[\])}])?\s*;?\s*$/,
-  );
+  // More permissive than Mermaid: extract source, arrow+label, target
+  const parts = matchFlowchartEdge(line);
   if (!parts) return;
 
   const [, srcId, srcLabel, , edgeLabel, tgtId, tgtLabel] = parts;
@@ -116,16 +227,24 @@ function parseFlowchartLine(
   edges.push({ from: srcNorm, to: tgtNorm, label: edgeLabel?.trim() });
 }
 
+/**
+ * A state transition: StateA --> StateB : event, with [*] as a node marker.
+ * The event used to be `:\s*(.+)`, whose `\s*` and `.+` both match spaces: a
+ * line whose event breaks at a line terminator tried every split of the
+ * spaces before it, a quadratic stall in the server. The event now starts at
+ * its first non-space; the second branch is what `.+` took from a line that
+ * ends in spaces (one of them, not a line terminator), so the captures are
+ * the old pattern's. Exported for tests.
+ */
+export const STATE_TRANSITION =
+  /^(\[\*\]|[A-Za-z0-9_]+)\s*-->\s*(\[\*\]|[A-Za-z0-9_]+)\s*(?::\s*(\S.*|[^\S\n\r\u2028\u2029]))?$/;
+
 function parseStateLine(
   line: string,
   nodes: Map<string, MermaidNode>,
   edges: MermaidEdge[],
 ): void {
-  // State transitions: StateA --> StateB : event
-  // Handle [*] as a special node marker
-  const parts = line.match(
-    /^(\[\*\]|[A-Za-z0-9_]+)\s*-->\s*(\[\*\]|[A-Za-z0-9_]+)\s*(?::\s*(.+))?$/,
-  );
+  const parts = line.match(STATE_TRANSITION);
   if (!parts) return;
 
   const [, srcRaw, tgtRaw, event] = parts;
@@ -138,11 +257,28 @@ function parseStateLine(
   edges.push({ from: srcNorm, to: tgtNorm, label: event?.trim() });
 }
 
+/**
+ * A label's text: [Label], (Label), {Label}, ((Label)) and so on, stripped of
+ * its brackets and the spaces inside them. What
+ * /^[\[({]+\s*(.*?)\s*[\])}]+$/ captured from the trimmed label, scanned
+ * once: the pattern's lazy middle and the \s* after it rescanned a run of
+ * spaces for every character before it (131,072 spaces took 13.9 s).
+ */
 function extractLabel(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
-  // Strip brackets/parens: [Label], (Label), {Label}, ((Label)), etc.
-  const match = raw.trim().match(/^[\[({]+\s*(.*?)\s*[\])}]+$/);
-  return match?.[1] || undefined;
+  const t = raw.trim();
+  let opens = 0;
+  while (opens < t.length && isOpen(t[opens])) opens++;
+  let closes = t.length;
+  while (closes > opens && isClose(t[closes - 1])) closes--;
+  if (opens === 0 || closes === t.length) return undefined;
+  let start = opens;
+  while (start < closes && isWs(t.charCodeAt(start))) start++;
+  let end = closes;
+  while (end > start && isWs(t.charCodeAt(end - 1))) end--;
+  // `.` matches no line terminator; the spaces around the text may hold one.
+  for (let i = start; i < end; i++) if (isLineTerminator(t.charCodeAt(i))) return undefined;
+  return t.slice(start, end) || undefined;
 }
 
 function generateProlog(graph: MermaidGraph): string {
