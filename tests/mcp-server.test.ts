@@ -242,6 +242,23 @@ describe("Chiasmus MCP Server", () => {
       expect(parsed.template.solver).toBe("prolog");
     });
 
+    it("reports no promoted flag, by name or in the list", async () => {
+      const byName = await client.callTool({
+        name: "chiasmus_skills",
+        arguments: { name: "graph-reachability" },
+      });
+      const one = JSON.parse((byName.content as Array<{ type: string; text: string }>)[0].text);
+      expect(one.metadata.name).toBe("graph-reachability");
+      expect(one.metadata).not.toHaveProperty("promoted");
+
+      const listed = await client.callTool({ name: "chiasmus_skills", arguments: {} });
+      const all = JSON.parse((listed.content as Array<{ type: string; text: string }>)[0].text);
+      expect(all.length).toBeGreaterThan(0);
+      for (const item of all) {
+        expect(item.metadata).not.toHaveProperty("promoted");
+      }
+    });
+
     it("lists all templates when no query or name given", async () => {
       const result = await client.callTool({
         name: "chiasmus_skills",

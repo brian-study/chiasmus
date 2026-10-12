@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import Database from "better-sqlite3";
 import { SkillLibrary } from "../src/skills/library.js";
 import { STARTER_TEMPLATES } from "../src/skills/starters.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -31,7 +32,7 @@ describe("SkillLibrary", () => {
         expect(item.metadata.reuseCount).toBe(0);
         expect(item.metadata.successCount).toBe(0);
         expect(item.metadata.lastUsed).toBeNull();
-        expect(item.metadata.promoted).toBe(true); // starters are pre-promoted
+        expect(item.metadata).not.toHaveProperty("promoted");
       }
     });
   });
@@ -194,7 +195,7 @@ describe("SkillLibrary", () => {
     };
 
     it("persists learned templates across library instances", async () => {
-      const added = library.addLearned(learnedTemplate);
+      const added = library.addTemplate(learnedTemplate);
       expect(added).toBe(true);
       library.close();
 
@@ -207,24 +208,64 @@ describe("SkillLibrary", () => {
       expect(result!.template.normalizations).toEqual(learnedTemplate.normalizations);
       expect(result!.template.tips).toEqual(learnedTemplate.tips);
       expect(result!.template.example).toBe(learnedTemplate.example);
-      expect(result!.metadata.promoted).toBe(false);
+      expect(result!.metadata).not.toHaveProperty("promoted");
       library2.close();
     });
 
-    it("persists promoted state across library instances", async () => {
-      library.addLearned(learnedTemplate);
-      library.promote("test-learned-template");
+    it("keeps addLearned, the former name of addTemplate, working for existing callers", async () => {
+      expect(library.addLearned(learnedTemplate)).toBe(true);
+      expect(library.get("test-learned-template")!.template.skeleton).toBe(learnedTemplate.skeleton);
+      expect(library.addLearned(learnedTemplate)).toBe(false);
       library.close();
+
+      const library2 = await SkillLibrary.create(tempDir);
+      expect(library2.get("test-learned-template")).not.toBeNull();
+      library2.close();
+    });
+
+    it("opens a database whose rows carry the promoted column of older versions", async () => {
+      library.addTemplate(learnedTemplate);
+      library.close();
+
+      // Older versions wrote promoted = 1 on a template they promoted. The
+      // column stays in the schema, such a file still opens, and the value
+      // is not read or reported.
+      const db = new Database(join(tempDir, "chiasmus.db"));
+      try {
+        const columns = (db.prepare("PRAGMA table_info(skill_metadata)").all() as Array<{ name: string }>)
+          .map((c) => c.name);
+        expect(columns).toContain("promoted");
+        db.prepare("UPDATE skill_metadata SET promoted = 1 WHERE name = ?").run("test-learned-template");
+      } finally {
+        db.close();
+      }
 
       const library2 = await SkillLibrary.create(tempDir);
       const result = library2.get("test-learned-template");
       expect(result).not.toBeNull();
-      expect(result!.metadata.promoted).toBe(true);
+      expect(result!.template.skeleton).toBe(learnedTemplate.skeleton);
+      expect(result!.metadata).not.toHaveProperty("promoted");
       library2.close();
     });
 
+    it("writes no promoted value: the rows it creates carry the column default", () => {
+      library.addTemplate(learnedTemplate);
+      library.close();
+
+      const db = new Database(join(tempDir, "chiasmus.db"));
+      try {
+        const rows = db
+          .prepare("SELECT name, promoted FROM skill_metadata")
+          .all() as Array<{ name: string; promoted: number }>;
+        expect(rows.length).toBe(STARTER_TEMPLATES.length + 1);
+        expect(rows.filter((r) => r.promoted !== 0)).toEqual([]);
+      } finally {
+        db.close();
+      }
+    });
+
     it("remove() deletes the template from disk", async () => {
-      library.addLearned(learnedTemplate);
+      library.addTemplate(learnedTemplate);
       library.remove("test-learned-template");
       library.close();
 
@@ -234,7 +275,7 @@ describe("SkillLibrary", () => {
     });
 
     it("reloaded templates are searchable", async () => {
-      library.addLearned(learnedTemplate);
+      library.addTemplate(learnedTemplate);
       library.close();
 
       const library2 = await SkillLibrary.create(tempDir);
@@ -242,6 +283,79 @@ describe("SkillLibrary", () => {
       const names = results.map((r) => r.template.name);
       expect(names).toContain("test-learned-template");
       library2.close();
+    });
+
+    // addTemplate reports success only for a template it stored: what the
+    // library holds in memory is what a restart will load from disk.
+
+    it("adds nothing in memory when the insert throws", () => {
+      const before = library.list().length;
+      // SQLite cannot bind an object, so the insert of this template throws.
+      const unbindable = {
+        ...learnedTemplate,
+        example: { text: "fact(foo)." } as unknown as string,
+      };
+
+      expect(() => library.addTemplate(unbindable)).toThrow();
+
+      expect(library.get("test-learned-template")).toBeNull();
+      expect(library.list().length).toBe(before);
+      const names = library.search("reusable template runtime").map((r) => r.template.name);
+      expect(names).not.toContain("test-learned-template");
+      // The name is still free for a template that can be stored.
+      expect(library.addTemplate(learnedTemplate)).toBe(true);
+    });
+
+    it("returns false and adds nothing in memory when the name is already stored on disk", async () => {
+      // A second process sharing the directory stores the name after this
+      // instance loaded, so the name is on disk but not in this instance.
+      const other = await SkillLibrary.create(tempDir);
+      try {
+        expect(other.addTemplate(learnedTemplate)).toBe(true);
+      } finally {
+        other.close();
+      }
+
+      const sameName = { ...learnedTemplate, signature: "a second definition under the taken name" };
+      expect(library.addTemplate(sameName)).toBe(false);
+
+      expect(library.get("test-learned-template")).toBeNull();
+      const names = library.search("second definition taken name").map((r) => r.template.name);
+      expect(names).not.toContain("test-learned-template");
+
+      library.close();
+      const reopened = await SkillLibrary.create(tempDir);
+      try {
+        expect(reopened.get("test-learned-template")!.template.signature).toBe(learnedTemplate.signature);
+      } finally {
+        reopened.close();
+      }
+    });
+
+    it("stores no template row when its metadata row cannot be written", () => {
+      const dbPath = join(tempDir, "chiasmus.db");
+      const db = new Database(dbPath);
+      try {
+        db.exec(`
+          CREATE TRIGGER refuse_metadata BEFORE INSERT ON skill_metadata
+          BEGIN SELECT RAISE(ABORT, 'metadata write refused'); END
+        `);
+      } finally {
+        db.close();
+      }
+
+      expect(() => library.addTemplate(learnedTemplate)).toThrow(/metadata write refused/);
+
+      expect(library.get("test-learned-template")).toBeNull();
+      const check = new Database(dbPath);
+      try {
+        const row = check
+          .prepare("SELECT name FROM skill_templates WHERE name = ?")
+          .get("test-learned-template");
+        expect(row).toBeUndefined();
+      } finally {
+        check.close();
+      }
     });
   });
 });

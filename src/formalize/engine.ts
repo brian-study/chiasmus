@@ -54,9 +54,20 @@ Common fixes by feedback type:
 - UNSAT with core: conflicting assertions identified → remove or weaken one of the conflicting constraints
 - No Prolog solutions: missing facts/rules → add covering clauses | wrong query pattern → fix unification`;
 
+/**
+ * The part of SkillLibrary the engine uses. The engine is typed against
+ * this slice and not the class, so anything that offers these four
+ * methods can stand in for the library, and the rest of SkillLibrary can
+ * change without touching the engine or its stand-ins.
+ */
+export type FormalizationLibrary = Pick<
+  SkillLibrary,
+  "search" | "list" | "getTemplateSearchText" | "recordUse"
+>;
+
 export class FormalizationEngine {
   constructor(
-    private library: SkillLibrary,
+    private library: FormalizationLibrary,
     private llm: LLMAdapter,
     private embedding?: EmbeddingAdapter,
   ) {}

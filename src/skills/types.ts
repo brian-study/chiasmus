@@ -46,7 +46,6 @@ export interface SkillMetadata {
   reuseCount: number;
   successCount: number;
   lastUsed: string | null;
-  promoted: boolean;
 }
 
 /** Template with its metadata attached */

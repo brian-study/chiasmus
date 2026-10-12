@@ -7,9 +7,9 @@ export { extractGraph, runAnalysis, runAnalysisFromGraph, parseMermaid, graphToP
 export type { CodeGraph, DefinesFact, CallsFact, ImportsFact, ExportsFact, ContainsFact, LanguageAdapter, SymbolKind, AnalysisType, AnalysisRequest, AnalysisResult } from "./graph/index.js";
 
 export { lintSpec, classifyFeedback, extractPrologQuery, FormalizationEngine } from "./formalize/index.js";
-export type { LintResult, FormalizeResult, SolveResult } from "./formalize/index.js";
+export type { LintResult, FormalizeResult, SolveResult, FormalizationLibrary } from "./formalize/index.js";
 
-export { SkillLibrary, SkillLearner, craftTemplate, validateTemplate } from "./skills/index.js";
+export { SkillLibrary, craftTemplate, validateTemplate } from "./skills/index.js";
 export type { SearchOptions, CraftInput, CraftResult, SkillTemplate, SlotDef, Normalization, SkillMetadata, SkillWithMetadata, SkillSearchResult } from "./skills/index.js";
 
 export { createLLMFromEnv, createEmbeddingFromEnv, AnthropicAdapter, OpenAICompatibleAdapter, OpenAICompatibleEmbeddingAdapter, MockEmbeddingAdapter } from "./llm/index.js";

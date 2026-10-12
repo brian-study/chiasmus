@@ -279,8 +279,6 @@ export CHIASMUS_LOCAL_EMBED_DIM=1024        # optional; else discovered on first
 
 When enabled, local takes priority over cloud embedding providers. `model` accepts an `hf:` repo URI, a bare Hugging Face repo id (`org/repo`), a local `.gguf` path, or an `http(s)` URL. Env vars override the config block per field; `CHIASMUS_LOCAL_EMBED_DIR` overrides the download directory (default `$CHIASMUS_HOME/models`) and `CHIASMUS_LOCAL_EMBED_BATCH` the texts-per-call batch size (default 32).
 
-**`chiasmus_learn`** — Extract a reusable template from a verified solution. Candidates get promoted after 3+ successful reuses.
-
 **`chiasmus_lint`** — Fast structural validation of specs without running the solver.
 
 ## Recommended Workflow
@@ -429,7 +427,7 @@ Or import from specific subpaths:
 import { createZ3Solver, createPrologSolver } from "chiasmus/solvers";
 import { extractGraph, runAnalysis } from "chiasmus/graph";
 import { lintSpec, FormalizationEngine } from "chiasmus/formalize";
-import { SkillLibrary, SkillLearner } from "chiasmus/skills";
+import { SkillLibrary, craftTemplate } from "chiasmus/skills";
 import { createLLMFromEnv } from "chiasmus/llm";
 ```
 
@@ -498,7 +496,7 @@ library.close();
 | `chiasmus/solvers` | `SolverSession`, `createZ3Solver`, `createPrologSolver`, `createChildSolver`, `shutdownSolverChildren`, `correctionLoop`, `setFatalSolverErrorHandler`, `exitOnFatalSolverError`, `isFatalWasmError`, solver types |
 | `chiasmus/graph` | `extractGraph`, `runAnalysis`, `runAnalysisFromGraph`, `buildFactsResult`, `graphToProlog`, `parseMermaid`, `detectCommunities`, `detectHubs`, `detectBridges`, `analyzeBridges`, `detectSurprisingConnections`, `detectEntryPoints`, `graphDiff`, `saveSnapshot`/`loadSnapshot`/`listSnapshots`, cache APIs, adapter registry, graph types |
 | `chiasmus/formalize` | `lintSpec`, `classifyFeedback`, `extractPrologQuery`, `FormalizationEngine`, result types |
-| `chiasmus/skills` | `SkillLibrary`, `SkillLearner`, `craftTemplate`, `validateTemplate`, skill types |
+| `chiasmus/skills` | `SkillLibrary`, `craftTemplate`, `validateTemplate`, skill types |
 | `chiasmus/llm` | `createLLMFromEnv`, `createEmbeddingFromEnv`, `AnthropicAdapter`, `OpenAICompatibleAdapter`, `OpenAICompatibleEmbeddingAdapter`, `LocalEmbeddingAdapter`, `resolveLocalEmbeddingConfig`, LLM types |
 | `chiasmus/mcp` | `createChiasmusServer`, `getChiasmusHome` |
 
@@ -528,7 +526,7 @@ library.close();
 | `CHIASMUS_LOCAL_EMBED_DIR` | `$CHIASMUS_HOME/models` | Where downloaded models are cached |
 | `CHIASMUS_LOCAL_EMBED_BATCH` | `32` | Texts per embedding backend call |
 
-Providers are checked in order: Anthropic → DeepSeek → OpenAI. Only one key is needed for autonomous mode (`chiasmus_solve`, `chiasmus_learn`). When used from Claude Code, Crush, or OpenCode, no API key is needed — the calling LLM handles template filling directly.
+Providers are checked in order: Anthropic → DeepSeek → OpenAI. Only one key is needed for autonomous mode (`chiasmus_solve`). When used from Claude Code, Crush, or OpenCode, no API key is needed — the calling LLM handles template filling directly.
 
 Embedding provider selection (first match wins): local embeddings (when `CHIASMUS_LOCAL_EMBED` is set and a model is configured) → Azure OpenAI → OpenAI → DeepSeek → OpenRouter. When enabled without a model, a warning is logged and cloud providers are used instead.
 

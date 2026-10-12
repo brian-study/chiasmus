@@ -78,6 +78,20 @@ export function validateTemplate(input: CraftInput, library: SkillLibrary): stri
     }
   }
 
+  // Optional fields. The library binds `example` to a TEXT column and
+  // stores `tips` as JSON that formalize later maps over as strings, so any
+  // other shape is refused here instead of failing at the insert or at use.
+  // null counts as absent: JSON callers send it for an omitted field.
+  if (input.example != null && typeof input.example !== "string") {
+    errors.push("'example' must be a string when given");
+  }
+  if (
+    input.tips != null &&
+    !(Array.isArray(input.tips) && input.tips.every((t) => typeof t === "string"))
+  ) {
+    errors.push("'tips' must be an array of strings when given");
+  }
+
   // Cross-validate skeleton slots vs slot definitions
   if (typeof input.skeleton === "string" && Array.isArray(input.slots)) {
     const skeletonSlots = new Set(
@@ -118,8 +132,11 @@ export async function craftTemplate(
     skeleton: input.skeleton,
     slots: input.slots as SlotDef[],
     normalizations: input.normalizations as Normalization[],
-    tips: input.tips,
-    example: input.example,
+    // validateTemplate lets null through as absent, and the library stores
+    // an absent field as NULL and loads it back as undefined. Fold null here
+    // so this instance serves what a reopened library does.
+    tips: input.tips ?? undefined,
+    example: input.example ?? undefined,
   };
 
   // Optional: test the example through the solver
@@ -144,9 +161,16 @@ export async function craftTemplate(
     }
   }
 
-  const added = library.addLearned(template);
+  const added = library.addTemplate(template);
   if (!added) {
-    return { created: false, errors: [`Failed to add template "${input.name}" to library`] };
+    // addTemplate answers false for a taken name wherever the name is held,
+    // and validation above leaves a taken name as its only reason to refuse.
+    // A name this instance holds was added here after validation, while the
+    // example was being tested. One it does not hold is on disk only.
+    const reason = library.get(input.name)
+      ? `Template "${input.name}" already exists in library`
+      : `Template name "${input.name}" is already taken on disk: another process sharing this library's directory stored it, and this instance sees it after a restart`;
+    return { created: false, errors: [reason] };
   }
 
   return {
