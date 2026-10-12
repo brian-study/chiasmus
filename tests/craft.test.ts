@@ -94,6 +94,37 @@ describe("validateTemplate", () => {
     const errors = validateTemplate(validInput({ normalizations: [] }), library);
     expect(errors.some((e) => e.includes("normalizations") && e.includes("non-empty"))).toBe(true);
   });
+
+  it("non-string example returns error", () => {
+    for (const example of [{ text: "(assert true)" }, ["(assert true)"], 42, true]) {
+      const errors = validateTemplate(
+        validInput({ example: example as unknown as string }),
+        library,
+      );
+      expect(errors.some((e) => e.includes("'example'")), JSON.stringify(example)).toBe(true);
+    }
+  });
+
+  it("tips that is not an array of strings returns error", () => {
+    for (const tips of ["one tip", [1, 2], [["nested"]], ["ok", null], { 0: "tip" }]) {
+      const errors = validateTemplate(
+        validInput({ tips: tips as unknown as string[] }),
+        library,
+      );
+      expect(errors.some((e) => e.includes("'tips'")), JSON.stringify(tips)).toBe(true);
+    }
+  });
+
+  it("string example and string tips pass, and null counts as absent", () => {
+    const given = validInput({ example: "(assert true)", tips: ["declare before use"] });
+    expect(validateTemplate(given, library)).toHaveLength(0);
+
+    const nulls = validInput({
+      example: null as unknown as undefined,
+      tips: null as unknown as undefined,
+    });
+    expect(validateTemplate(nulls, library)).toHaveLength(0);
+  });
 });
 
 describe("craftTemplate", () => {
@@ -167,5 +198,95 @@ describe("craftTemplate", () => {
     const result = await craftTemplate(validInput({ solver: "invalid" }), library);
     expect(result.created).toBe(false);
     expect(result.errors!.length).toBeGreaterThan(0);
+  });
+
+  it("non-string example is a validation error, not a thrown bind error", async () => {
+    const result = await craftTemplate(
+      validInput({ example: { text: "(assert true)" } as unknown as string }),
+      library,
+    );
+
+    expect(result.created).toBe(false);
+    expect(result.errors!.some((e) => e.includes("'example'"))).toBe(true);
+    expect(library.get("test-template")).toBeNull();
+  });
+
+  it("tips that is not an array of strings is a validation error and stores nothing", async () => {
+    const result = await craftTemplate(
+      validInput({ tips: "one tip" as unknown as string[] }),
+      library,
+    );
+
+    expect(result.created).toBe(false);
+    expect(result.errors!.some((e) => e.includes("'tips'"))).toBe(true);
+    expect(library.get("test-template")).toBeNull();
+  });
+
+  it("null example and tips are stored as absent, the same as a reopened library serves them", async () => {
+    const result = await craftTemplate(
+      validInput({
+        example: null as unknown as undefined,
+        tips: null as unknown as undefined,
+      }),
+      library,
+    );
+    expect(result.created).toBe(true);
+
+    const running = library.get("test-template")!.template;
+    expect(running.example).toBeUndefined();
+    expect(running.tips).toBeUndefined();
+
+    library.close();
+    library = await SkillLibrary.create(tempDir);
+    expect(library.get("test-template")!.template).toEqual(running);
+  });
+
+  it("says the name is taken on disk when another process sharing the directory stored it", async () => {
+    // A second process stores the name after this instance loaded, so the
+    // name is on disk but not in this instance, and validation here passes.
+    const other = await SkillLibrary.create(tempDir);
+    try {
+      expect((await craftTemplate(validInput(), other)).created).toBe(true);
+    } finally {
+      other.close();
+    }
+
+    const result = await craftTemplate(
+      validInput({ signature: "a second definition under the taken name" }),
+      library,
+    );
+
+    expect(result.created).toBe(false);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors![0]).toContain('"test-template"');
+    expect(result.errors![0]).toContain("already taken on disk");
+    expect(result.errors![0]).toContain("restart");
+    expect(library.get("test-template")).toBeNull();
+  });
+
+  it("says the template already exists when this instance added the name after validation", async () => {
+    // Both calls validate before either adds: each waits on its solver run
+    // first. The one that adds second is refused for a name held in memory.
+    const tested = () =>
+      craftTemplate(
+        validInput({
+          solver: "prolog",
+          skeleton: "{{SLOT:facts}}\n{{SLOT:rules}}",
+          slots: [
+            { name: "facts", description: "Facts", format: "parent(tom, bob)." },
+            { name: "rules", description: "Rules", format: "ancestor(X,Y) :- parent(X,Y)." },
+          ],
+          example: "parent(tom, bob).\n?- parent(tom, X).",
+          test: true,
+        }),
+        library,
+      );
+
+    const results = await Promise.all([tested(), tested()]);
+
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    const refused = results.find((r) => !r.created)!;
+    expect(refused.errors).toEqual(['Template "test-template" already exists in library']);
+    expect(library.get("test-template")).not.toBeNull();
   });
 });

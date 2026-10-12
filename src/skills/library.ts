@@ -19,6 +19,13 @@ export interface SearchOptions {
   limit?: number;
 }
 
+/**
+ * Ensures a template has its metadata row and leaves an existing row's
+ * counters alone. Run for each starter at load and for each added template.
+ */
+const ENSURE_METADATA_ROW_SQL =
+  "INSERT INTO skill_metadata (name) VALUES (?) ON CONFLICT(name) DO NOTHING";
+
 export class SkillLibrary {
   private db: Database.Database;
   private templates: Map<string, SkillTemplate>;
@@ -47,7 +54,6 @@ export class SkillLibrary {
         reuseCount: row.reuse_count,
         successCount: row.success_count,
         lastUsed: row.last_used,
-        promoted: !!row.promoted,
       });
     }
   }
@@ -64,6 +70,11 @@ export class SkillLibrary {
     try {
       db.pragma("journal_mode = WAL");
 
+      // `promoted` is neither read nor written here: no code promotes a
+      // template. It stays in the DDL so that every database has the one
+      // schema: files created by earlier versions have the column, and an
+      // earlier release opening a file created by this one reads it and
+      // names it in its INSERTs. DEFAULT 0 fills it on the rows added here.
       db.exec(`
         CREATE TABLE IF NOT EXISTS skill_metadata (
           name TEXT PRIMARY KEY,
@@ -90,11 +101,7 @@ export class SkillLibrary {
 
       // Load starter templates and ensure metadata rows exist
       const templates = new Map<string, SkillTemplate>();
-      const upsert = db.prepare(`
-        INSERT INTO skill_metadata (name, promoted)
-        VALUES (?, 1)
-        ON CONFLICT(name) DO NOTHING
-      `);
+      const upsert = db.prepare(ENSURE_METADATA_ROW_SQL);
 
       for (const t of STARTER_TEMPLATES) {
         templates.set(t.name, t);
@@ -225,42 +232,51 @@ export class SkillLibrary {
     return this.loadMetadata(name);
   }
 
-  /** Add a learned (candidate) template to the library. Returns false if name already exists. */
-  addLearned(template: SkillTemplate): boolean {
+  /**
+   * Add a template to the library and persist it. Returns false, and adds
+   * nothing, if the name is already taken in memory or on disk.
+   */
+  addTemplate(template: SkillTemplate): boolean {
     if (this.templates.has(template.name)) {
       return false;
     }
 
+    // Disk first, memory second: the template is added in memory only once
+    // its row is written, so what this instance serves is what a restart
+    // loads. The two writes share a transaction, so a failure of either
+    // leaves no row behind, and the throw leaves memory as it was.
+    const persist = this.db.transaction((): boolean => {
+      // INSERT OR IGNORE never clobbers a row that is on disk but not in
+      // this instance (another process sharing the directory wrote it);
+      // `changes` then reports 0 and nothing is added.
+      const inserted = this.db
+        .prepare(
+          `INSERT OR IGNORE INTO skill_templates
+           (name, domain, solver, signature, skeleton, slots, normalizations, tips, example)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          template.name,
+          template.domain,
+          template.solver,
+          template.signature,
+          template.skeleton,
+          JSON.stringify(template.slots),
+          JSON.stringify(template.normalizations),
+          template.tips ? JSON.stringify(template.tips) : null,
+          template.example ?? null,
+        );
+      if (inserted.changes !== 1) return false;
+
+      this.db.prepare(ENSURE_METADATA_ROW_SQL).run(template.name);
+      return true;
+    });
+
+    if (!persist()) {
+      return false;
+    }
+
     this.templates.set(template.name, template);
-
-    // Persist template definition so it survives restarts. Use INSERT OR IGNORE
-    // so we never clobber an existing row if the disk and in-memory state
-    // somehow diverge.
-    this.db
-      .prepare(
-        `INSERT OR IGNORE INTO skill_templates
-         (name, domain, solver, signature, skeleton, slots, normalizations, tips, example)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        template.name,
-        template.domain,
-        template.solver,
-        template.signature,
-        template.skeleton,
-        JSON.stringify(template.slots),
-        JSON.stringify(template.normalizations),
-        template.tips ? JSON.stringify(template.tips) : null,
-        template.example ?? null,
-      );
-
-    this.db
-      .prepare(
-        `INSERT INTO skill_metadata (name, promoted)
-         VALUES (?, 0)
-         ON CONFLICT(name) DO NOTHING`
-      )
-      .run(template.name);
 
     if (!this.metadataCache.has(template.name)) {
       this.metadataCache.set(template.name, {
@@ -268,7 +284,6 @@ export class SkillLibrary {
         reuseCount: 0,
         successCount: 0,
         lastUsed: null,
-        promoted: false,
       });
     }
 
@@ -280,16 +295,9 @@ export class SkillLibrary {
     return true;
   }
 
-  /** Promote a candidate template to full status */
-  promote(name: string): void {
-    this.db
-      .prepare("UPDATE skill_metadata SET promoted = 1 WHERE name = ?")
-      .run(name);
-
-    const existing = this.metadataCache.get(name);
-    if (existing) {
-      existing.promoted = true;
-    }
+  /** @deprecated The former name of {@link SkillLibrary.addTemplate}; call that instead. */
+  addLearned(template: SkillTemplate): boolean {
+    return this.addTemplate(template);
   }
 
   /** Remove a template from the library */
@@ -321,7 +329,6 @@ export class SkillLibrary {
       reuseCount: 0,
       successCount: 0,
       lastUsed: null,
-      promoted: false,
     };
   }
 }

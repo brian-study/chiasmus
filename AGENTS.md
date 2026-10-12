@@ -59,7 +59,6 @@ src/
 │   ├── starters.ts        # 8 built-in starter templates (5 Z3, 3 Prolog)
 │   ├── bm25.ts            # BM25 keyword search for template retrieval
 │   ├── craft.ts           # craftTemplate — user-created template validation + storage
-│   ├── learner.ts         # SkillLearner — LLM-driven template extraction from solutions
 │   └── relationships.ts   # Template relationship/suggestion graph
 ├── graph/
 │   ├── types.ts           # CodeGraph, LanguageAdapter, FileNode, Hyperedge, DefinesFact, CallsFact.calleeQN, ImportsFact.resolved, FileTypeInfo
@@ -206,7 +205,7 @@ describe("Z3Solver", () => {
 
 ## MCP Tools
 
-11 tools exposed via MCP (defined in `src/mcp-server.ts`):
+10 tools exposed via MCP (defined in `src/mcp-server.ts`):
 
 | Tool | Requires LLM? | Purpose |
 |------|:---:|---------|
@@ -214,7 +213,6 @@ describe("Z3Solver", () => {
 | `chiasmus_skills` | No | Search/list formalization templates |
 | `chiasmus_formalize` | No* | Find template + slot-filling instructions |
 | `chiasmus_solve` | Yes | End-to-end: template → fill → lint → verify → correct |
-| `chiasmus_learn` | Yes | Extract reusable template from verified solution |
 | `chiasmus_lint` | No | Fast structural validation without running solver |
 | `chiasmus_graph` | No | Source code call graph analysis (tree-sitter + Prolog / native O(V+E)). 16 analyses; see below. Supports per-file content-hash cache (`cache=true`) + named graph snapshots (`save_snapshot`, `against`). TS/JS carry qualified callees (`calleeQN`) and resolved imports (`resolved`) when inferable. |
 | `chiasmus_map` | No | Pre-built codebase map: repo outline, per-file detail, or symbol lookup. Share with an LLM **before** bulk file reads to cut redundant reads/greps. Three modes (`overview`/`file`/`symbol`), markdown or JSON. Reuses the same tree-sitter extraction + per-file cache as `chiasmus_graph`. |
